@@ -1,23 +1,25 @@
 ---
 version: alpha
 colors:
-  background: "#120F11"
-  surface: "#1C171A"
-  surfaceRaised: "#292125"
-  text: "#F7EFEC"
-  muted: "#B5A5AA"
-  line: "#3E3035"
-  primary: "#F47B68"
-  primarySolid: "#B83E32"
-  onPrimary: "#FFF5F1"
-  primarySoft: "#322022"
-  primaryLine: "#754039"
-  shell: "#171214"
-  marketUp: "#FF786F"
-  marketDown: "#65C79A"
-  ready: "#65C79A"
-  secondary: "#DFA6A0"
-  positive: "#F47B68"
+  background: "#111827"
+  surface: "#1B2535"
+  surfaceRaised: "#273347"
+  text: "#E4E4E7"
+  muted: "#AEB6C4"
+  line: "#344154"
+  primary: "#FF5C5C"
+  primarySolid: "#FF5C5C"
+  onPrimary: "#111827"
+  primarySoft: "#322A3B"
+  primaryLine: "#8E505D"
+  shell: "#0E1625"
+  marketRed: "#FF5C5C"
+  marketGreen: "#18E86B"
+  marketUp: "#FF5C5C"
+  marketDown: "#18E86B"
+  ready: "#18E86B"
+  secondary: "#ACBCE0"
+  positive: "#FF5C5C"
   caution: "#F5AD4E"
   negative: "#FF8B91"
 typography:
@@ -79,13 +81,13 @@ components:
 
 The product is a personal investing workspace with an AI research agent. Treat financial information as an instrument panel: legible, sourced, time-aware, and calm. The signature is an evidence rail that links every recommendation to its quote, market data, and strategy run. The experience is a product surface, not a trading terminal clone.
 
-The reference is the project's supplied Duet AI concepts: warm graphite canvas, restrained vermilion and dusty rose accents, thin separators, compact conversation elements, and low visual noise. Keep the content specific to portfolios, market sessions, strategies, and evidence. Avoid generic purple AI gradients, glossy glass panels, and flashing trading effects.
+The market views follow the user's color-adjusted Lobster and OG references: navy and coral for A-share, slate and bright green for US, thin separators, compact conversation elements, and low visual noise. Keep the content specific to portfolios, market sessions, strategies, and evidence. Avoid generic purple AI gradients, glossy glass panels, and flashing trading effects.
 
-The index page uses a compact quote board within this language: one featured index, ten small linked cards, tabular numerals, and fixed geometry. Price changes use the existing red-rise/green-fall tokens without flashing. Source and exchange timestamps remain in quiet text beside the numbers; live display cadence never overrides data freshness labels.
+The index page uses a compact quote board within this language: one featured index, ten small linked cards, tabular numerals, and fixed geometry. When a live value changes, its block briefly receives a low-opacity tint based on the index's overall gain or loss and the selected A-share/US palette; the tint is disabled for reduced motion. Source and exchange timestamps remain in quiet text beside the numbers; live display cadence never overrides data freshness labels.
 
 ## Colors
 
-Use background and surface for the shell and panels. Vermilion is the primary interactive accent; solid vermilion buttons use warm white labels. Dusty rose denotes AI analysis. Navigation selections, result cards, composer focus and modal headers share warm red tints. Positive, caution, and negative colors are semantic and must not carry meaning alone; pair them with labels or symbols. Preserve contrast for muted text and dense financial data. Quote changes, breadth bars and candlestick charts use a user-selected market palette: A-share view is red-rise/green-fall (default); US view is green-rise/red-fall. MA5/10/20/60 keep distinct line colors. Market direction uses dedicated tokens, separate from brand and error tones. A configured AI model with a ready local runtime uses a green status dot and a textual status; this does not claim that its remote provider has passed a live probe. Body text stays warm white for readable research and tables.
+Use the exact user-selected view anchors: Lobster for A-share has accent #FF5C5C, background #111827, and foreground #E4E4E7; OG for US has reference market green #18E86B, background #343541, and foreground #D1D5DB. The US interactive accent on buttons, links, and selected controls is the softer #11C47F; market rise and ready status keep #18E86B. Derived surfaces, dividers, muted text, selected fills, and button text follow each anchor with readable contrast. The A-share view remains the default. Positive, caution, and negative colors are semantic and must not carry meaning alone; pair them with labels or symbols. Preserve contrast for muted text and dense financial data. Quote changes, portfolio profit and loss, return rates, breadth bars, and candlestick charts use the selected market palette: A-share view is red-rise/green-fall; US view is green-rise/red-fall. Error and warning tones retain their own semantics. MA5/10/20/60 keep distinct line colors. Market direction uses dedicated tokens, separate from brand and error tones. A configured AI model with a ready local runtime uses a green status dot and a textual status; this does not claim that its remote provider has passed a live probe. Body text uses the selected foreground for readable research and tables.
 
 ## Typography
 
@@ -93,15 +95,15 @@ Use the system sans stack for Chinese and English interface text. Use the monosp
 
 ## Layout
 
-The primary surface is an Agent conversation, following the reference VOS/Duet workspace: left navigation and recent research, a quiet conversation canvas, and a right rail for personal watchlist and market clocks. Chat has a bottom composer and its own message scroller. The welcome state offers three concrete research starting points. Data is reached through separate routes, conversation links, and evidence-backed result cards.
+The primary surface is an Agent conversation, following the reference VOS/Duet workspace: left navigation and recent research, a quiet conversation canvas, and a hideable right rail for personal watchlist and market clocks. The rail appears only in the Agent conversation. Chat has a bottom composer and its own message scroller. The welcome state offers a screenshot-to-holdings entry point and three concrete research starting points. Data is reached through separate routes, conversation links, and evidence-backed result cards.
 
-Desktop navigation is 224px. At widths ≤1220px the context rail opens in an application modal; at ≤760px navigation uses a modal menu. Data pages use natural-height content within the canonical page scroller; wide tables own horizontal overflow. Keep every action available on narrow screens. Use URL state for market filters, search, paging and detail tabs.
+Desktop navigation is 224px. At widths ≤900px the chat context rail opens in an application modal; at ≤760px navigation uses a modal menu. Data pages use the freed content width and natural height within the canonical page scroller; wide tables own horizontal overflow. Keep every action available on narrow screens. Use URL state for market filters, search, paging and detail tabs.
 
 Use a 4px base rhythm with 16px panel corners and 10px controls. Prefer fine separators to nested cards. Preserve generous conversation width and readable paragraph length. Financial tables can be denser than chat. Do not turn the homepage into a collection of dashboard widgets.
 
 ## Runtime Token Mapping
 
-Ownership follows Model B: `prototype/styles.css :root` is canonical; this file mirrors its accepted palette. It maps colors to `--bg`, `--surface`, `--raised`, `--text`, `--muted`, `--line`, `--primary`, `--secondary`, `--positive`, `--caution`, `--negative`; added warm theme roles map `primarySolid/onPrimary/primarySoft/primaryLine/shell/marketUp/marketDown/ready` to `--primary-solid/--on-primary/--primary-soft/--primary-line/--shell/--market-up/--market-down/--ready`; the `:root[data-market-palette="us"]` override swaps only the two market colors. Type maps to `--sans` and `--mono`; radii map to `--panel-radius` and `--control-radius`. Shared renderer/interaction owners live in `prototype/ui.js`; route orchestration and palette state live in `prototype/app.js`. The palette selection is stored in browser localStorage under `finch.marketPalette`. No remote fonts or component framework is required. `prototype/stock.js` owns OHLC aggregation, candle/volume drawing and dossier rendering; `prototype/identity.js` owns sign-in, TOTP enrollment, recovery-code display and reauthentication forms.
+Ownership follows Model B: `prototype/styles.css :root` is canonical; this file mirrors its accepted palette. It maps colors to `--bg`, `--surface`, `--raised`, `--text`, `--muted`, `--line`, `--primary`, `--secondary`, `--positive`, `--caution`, `--negative`; additional theme roles map `primarySolid/onPrimary/primarySoft/primaryLine/shell/marketUp/marketDown/ready` to `--primary-solid/--on-primary/--primary-soft/--primary-line/--shell/--market-up/--market-down/--ready`; the `:root[data-market-palette="us"]` override switches the complete OG palette, including background, surfaces, foreground, muted text, dividers, selected-state fill, scrollbars, interactive accents, and market direction. The six reference colors remain exact in their background, foreground, A-share accent, and US market-direction roles; the user-selected #11C47F now owns the US interactive accent. Supporting colors are derived for contrast. Fixed error and warning colors do not change. Type maps to `--sans` and `--mono`; radii map to `--panel-radius` and `--control-radius`. Shared renderer/interaction owners live in `prototype/ui.js`; route orchestration and palette state live in `prototype/app.js`. The palette selection is stored in browser localStorage under `finch.marketPalette`. No remote fonts or component framework is required. `prototype/stock.js` owns OHLC aggregation, candle/volume drawing and dossier rendering; `prototype/identity.js` owns sign-in, TOTP enrollment, recovery-code display and reauthentication forms.
 
 Global scrollbars use `--scrollbar-thumb`, `--scrollbar-hover`, `--scrollbar-track`; forced colors restores system coloring. Native select and date popups are intentionally platform-owned. Details are recorded in `UX-CONTRACT.md`.
 

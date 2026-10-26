@@ -16,6 +16,5 @@ The Spec Kitty CLI was not present in this checkout when these artifacts were pr
 - [007 — 模拟盘与投研工作台](007-paper-research-workbench/spec.md)：当前范围、指数、历史统计、资金采集、研报财报研究及数据缺口。
 - [008 — 新闻、流动性与板块轮动](008-news-liquidity-sector-rotation/spec.md)：策略研究优先新闻/央行流动性和行业轮动，再落到个股。
 
-- [009 — 密码登录与火山短信](009-password-login-and-volc-sms/spec.md)：默认密码登录、密码交易确认，可选火山短信登录保护，替代强制验证器。
 - [010 — 大盘指数快照与订阅行情](010-live-index-feed/spec.md)：每秒本机快照展示、公共源批量采集和可选 Longbridge 订阅。
-- [011 — 股票投研数据底座、研报检索与关联证据](011-research-data-foundation/spec.md)：保留 llm-wiki 记忆层，建设时点化事实、文档索引、关系证据和可复现的列式分析快照；[选型调研](../docs/STORAGE_ENGINE_RESEARCH.md)。
+- [011 — 股票投研数据底座、研报检索与关联证据](011-research-data-foundation/spec.md)：保留 llm-wiki 记忆层，建设时点化事实、文档索引、关系证据和可复现的列式分析快照。

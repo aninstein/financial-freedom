@@ -401,7 +401,17 @@ class ResearchTools:
                 raise ValueError("账户不存在")
             detail = {"account_id": data["account_id"], "label": data["label"], "mode": data["mode"], "currency": data["currency"],
                       "cash": data.get("cash"), "as_of": data.get("as_of"),
-                      "positions": [{"instrument_id": p["instrument_id"], "quantity": p["quantity"]} for p in data.get("positions", [])]}
+                      "principal": data.get("principal"), "total_assets": data.get("total_assets"),
+                      "total_pnl": data.get("total_pnl"), "total_return_pct": data.get("total_return_pct"),
+                      "valuation_complete": data.get("valuation_complete"),
+                      "positions": [{"instrument_id": p["instrument_id"], "quantity": p["quantity"],
+                                     "asset_class": p.get("asset_class"), "cost_basis": p.get("cost_basis"),
+                                     "current_value": p.get("current_value"), "unrealized_pnl": p.get("unrealized_pnl"),
+                                     "unrealized_return_pct": p.get("unrealized_return_pct"),
+                                     "reported_return_pct": p.get("reported_return_pct"),
+                                     "change_percent": p.get("change_percent"), "quote_time": p.get("quote_time"),
+                                     "valuation_source": p.get("valuation_source")}
+                                    for p in data.get("positions", [])]}
             item = self._evidence("account_snapshot", "用户本次明确选择的账户摘要", data.get("source") or "local account snapshot", detail["as_of"], detail)
             return {"evidence": [item], **detail}
 

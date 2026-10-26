@@ -310,6 +310,17 @@ agentbuddy-lock.yaml
 # Operator-only extension settings may contain MCP headers or environment secrets.
 /agent-tools.json
 
+# Local accounts, market caches, audit output, and generated previews.
+/data/
+/artifacts/
+/premium-audit.json
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.db
+*.db-shm
+*.db-wal
+
 # Vendor only the explicitly installed built-in skill and its install provenance.
 !/.agents/
 /.agents/*

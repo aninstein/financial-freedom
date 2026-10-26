@@ -1,15 +1,16 @@
 import { request } from "./api.js";
 import { getIdentity } from "./identity.js";
 import { esc, icon, money, percent, tone, notify } from "./ui.js";
+import { dueCalendarAlarms, shanghaiClock } from "./calendar-alarms.js";
 
 const MARKET_NAMES = { CN: "A股", HK: "港股", US: "美股" };
 const CATEGORIES = ["日报", "操作策略", "操作日志"];
-const SUB_CATEGORIES = ["A股打新", "逆回购", "财报披露", "自定义"];
+const SUB_CATEGORIES = ["A股打新", "逆回购", "财报披露", "持仓截图同步", "自定义"];
 const HOURS = Array.from({ length: 17 }, (_, i) => `${String(i + 6).padStart(2, "0")}:00`);
 let activeAccount = "";
 let activeCollapsed = false;
 const storageKey = () => `finch.calendar.v2:${getIdentity()?.user?.username || "local"}`;
-const emptyStore = () => ({ plans: [], events: [], subscriptions: [], reminders: false });
+const emptyStore = () => ({ plans: [], events: [], subscriptions: [], alarmAcknowledged: {} });
 function readStore() {
   try {
     const data = JSON.parse(localStorage.getItem(storageKey()) || "null") || {};
@@ -17,7 +18,7 @@ function readStore() {
   } catch { return emptyStore(); }
 }
 function writeStore(value) {
-  try { localStorage.setItem(storageKey(), JSON.stringify(value)); return true; }
+  try { localStorage.setItem(storageKey(), JSON.stringify(value)); window.dispatchEvent(new Event("calendar-store-changed")); return true; }
   catch { notify("浏览器未能保存日历内容，请检查本机存储空间", "error"); return false; }
 }
 function isoLocal(date = new Date()) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`; }
@@ -35,7 +36,19 @@ function fromISO(value) { const [y, m, d] = value.split("-").map(Number); return
 function safeURL(value) { try { const url = new URL(value); return ["http:", "https:"].includes(url.protocol) ? url.href : ""; } catch { return ""; } }
 function calendarURL(month, day, view = "month") { return `#/calendar?month=${month}&date=${day}&view=${view}${activeAccount ? `&account=${encodeURIComponent(activeAccount)}` : ""}${activeCollapsed ? "&collapsed=1" : ""}`; }
 function planRows(store, date) { return store.plans.filter(x => x.date === date).sort((a,b) => (a.time || "").localeCompare(b.time || "")); }
-function eventRows(store, date) { const enabled = new Set(store.subscriptions.filter(x => x.enabled).map(x => x.id)); return store.events.filter(x => x.date === date && (!x.subscriptionId || enabled.has(x.subscriptionId))).sort((a,b) => (a.time || "").localeCompare(b.time || "")); }
+function eventRows(store, date) {
+  const enabled = new Set(store.subscriptions.filter(x => x.enabled).map(x => x.id));
+  const events = store.events.filter(x => x.date === date && (!x.subscriptionId || enabled.has(x.subscriptionId)));
+  for (const subscription of store.subscriptions.filter(x => x.enabled && x.category === '持仓截图同步')) {
+    const created = shanghaiClock(new Date(subscription.createdAt || Date.now()));
+    const at = subscription.remindAt || '22:00';
+    if (date < created.date || (date === created.date && created.time > at)) continue;
+    events.push({ id: `daily:${subscription.id}:${date}`, date, time: at, title: subscription.name,
+      category: subscription.category, subscriptionId: subscription.id,
+      detail: '截图同步持仓、成本和收益率；识别草稿核对后保存。', recurring: true });
+  }
+  return events.sort((a,b) => (a.time || '').localeCompare(b.time || ''));
+}
 function marketDaysMarkup(sessions, date) {
   const row = sessions?.days?.find(x => x.date === date);
   if (!row) return `<p class="field-help">交易所日历未返回这一天。</p>`;
@@ -74,14 +87,16 @@ function detailMarkup(date, store, sessions, accounts, accountId) {
   return `<section class="calendar-detail panel"><div class="calendar-detail-head"><div><span class="eyebrow">当日详情</span><h2>${Number(date.slice(5,7))}月${Number(date.slice(8,10))}日 <small>${date.slice(0,4)}</small></h2></div><span class="calendar-date-pill">${fromISO(date).toLocaleDateString("zh-CN",{weekday:"long"})}</span></div>
     <div class="calendar-detail-section"><h3>市场交易时段</h3>${marketDaysMarkup(sessions,date)}</div>
     <div class="calendar-detail-section"><div class="calendar-section-title"><h3>市场与模拟盘表现</h3><span class="tag">收盘日线</span></div><div id="calendar-insights">${accountSelector(accounts,accountId)}<div class="calendar-benchmark-loading"><span class="spinner"></span>正在读取当日收盘行情…</div></div></div>
-    <div class="calendar-detail-section"><div class="calendar-section-title"><h3>日程与订阅内容 <span class="muted">${plans.length+events.length}</span></h3><button type="button" class="text-link calendar-inline-button" data-action="calendar-focus-event">＋ 添加日程</button></div>${events.length||plans.length?`<ul class="calendar-plan-list">${[...events.map(x=>({kind:"event",...x})),...plans.map(x=>({kind:"plan",...x}))].sort((a,b)=>(a.time||"").localeCompare(b.time||"")).map(x=>`<li><span class="calendar-plan-time">${esc(x.time||"全天")}</span><div><strong>${esc(x.title||x.category)} ${x.kind==="event"?`<span class="tag">${esc(x.category)}</span>`:""}</strong><p>${esc(x.detail||x.text||"")}</p>${x.kind==="event"?sourceLink(x.sourceUrl):""}</div><button type="button" class="icon-button calendar-delete" data-action="${x.kind==="event"?"calendar-delete-event":"calendar-delete-plan"}" data-id="${esc(x.id)}" aria-label="删除日程">×</button></li>`).join("")}</ul>`:`<p class="field-help">这一天还没有计划或订阅事件。</p>`}
+    <div class="calendar-detail-section"><div class="calendar-section-title"><h3>日程与订阅内容 <span class="muted">${plans.length+events.length}</span></h3><button type="button" class="text-link calendar-inline-button" data-action="calendar-focus-event">＋ 添加日程</button></div>${events.length||plans.length?`<ul class="calendar-plan-list">${[...events.map(x=>({kind:"event",...x})),...plans.map(x=>({kind:"plan",...x}))].sort((a,b)=>(a.time||"").localeCompare(b.time||"")).map(x=>`<li><span class="calendar-plan-time">${esc(x.time||"全天")}</span><div><strong>${esc(x.title||x.category)} ${x.kind==="event"?`<span class="tag">${esc(x.category)}</span>`:""}</strong><p>${esc(x.detail||x.text||"")}</p>${x.kind==="event"?sourceLink(x.sourceUrl):""}</div>${x.recurring?"":`<button type="button" class="icon-button calendar-delete" data-action="${x.kind==="event"?"calendar-delete-event":"calendar-delete-plan"}" data-id="${esc(x.id)}" aria-label="删除日程">×</button>`}</li>`).join("")}</ul>`:`<p class="field-help">这一天还没有计划或订阅事件。</p>`}
       <form id="calendar-plan-form" class="calendar-plan-form" novalidate><input type="hidden" name="date" value="${date}"><h3>记录日报 / 策略 / 操作日志</h3><div class="calendar-form-row"><select class="field" name="category" aria-label="计划类型">${CATEGORIES.map(x=>`<option>${x}</option>`).join("")}</select><input class="field calendar-time-input" name="time" type="time" aria-label="计划时间"><input class="field calendar-plan-text" name="text" aria-label="计划内容" placeholder="写下今天要做的事…" maxlength="240" required><button class="button primary small">保存</button></div><p class="form-error" id="calendar-plan-error" role="alert"></p></form>
       <form id="calendar-event-form" class="calendar-event-form" novalidate><input type="hidden" name="date" value="${date}"><h3>添加订阅事件 / 自定义日程</h3><div class="calendar-form-row"><select class="field" name="category" aria-label="订阅分类">${SUB_CATEGORIES.map(x=>`<option>${x}</option>`).join("")}</select><select class="field" name="subscriptionId" aria-label="关联订阅"><option value="">不关联订阅</option>${store.subscriptions.filter(x=>x.enabled).map(x=>`<option value="${esc(x.id)}">${esc(x.name)}</option>`).join("")}</select><input class="field calendar-time-input" name="time" type="time" aria-label="事件时间"><input class="field calendar-plan-text" name="title" aria-label="事件标题" placeholder="简短标题" maxlength="80" required><button class="button small">添加</button></div><textarea class="field calendar-event-detail" name="detail" aria-label="事件详细说明" placeholder="详细说明（可粘贴公告摘要）" maxlength="600"></textarea><div class="calendar-event-meta"><input class="field" name="sourceUrl" type="url" aria-label="公告或原文来源链接" placeholder="公告 / 财报原文链接 https://…"><p class="form-error" id="calendar-event-error" role="alert"></p></div></form>
       <div class="calendar-ai-row"><span><strong>让 AI 帮你整理</strong><small>先生成草稿，确认后再加入这一天</small></span>${CATEGORIES.map(x=>`<button class="button small ghost" data-action="calendar-ai-draft" data-date="${date}" data-category="${x}">AI ${x}</button>`).join("")}</div>
     </div><div class="calendar-local-note">日程与订阅配置保存在当前浏览器；AI 内容需你主动点击确认后写入。</div></section>`;
 }
 function subscriptionMarkup(store) {
-  return `<aside class="calendar-subscriptions panel"><div class="calendar-sub-head"><div><span class="eyebrow">订阅管理</span><h2>我的交易订阅</h2><p>开启后，订阅相关的日程标签会显示在对应日期；关闭后事件仍保留，重新开启即可恢复。</p></div><span class="tag accent">${store.subscriptions.filter(x=>x.enabled).length} 已开启</span></div><div class="calendar-sub-list">${store.subscriptions.length?store.subscriptions.map(x=>`<article class="calendar-sub-item"><div class="calendar-sub-main"><span class="calendar-sub-dot ${x.enabled?"enabled":""}"></span><div><strong>${esc(x.name)}</strong><small>${esc(x.category)} · ${x.enabled?"已订阅":"已暂停"}</small>${sourceLink(x.sourceUrl,"数据来源")}</div></div><div class="calendar-sub-actions"><button class="button small ${x.enabled?"":"primary"}" data-action="calendar-toggle-sub" data-id="${esc(x.id)}">${x.enabled?"暂停":"重新订阅"}</button><details class="calendar-edit-sub"><summary class="button small ghost">编辑</summary><form class="calendar-sub-edit-form" novalidate><input type="hidden" name="id" value="${esc(x.id)}"><input class="field" name="name" value="${esc(x.name)}" maxlength="60" required aria-label="订阅名称"><select class="field" name="category" aria-label="分类">${SUB_CATEGORIES.map(c=>`<option ${c===x.category?"selected":""}>${c}</option>`).join("")}</select><input class="field" name="sourceUrl" type="url" value="${esc(x.sourceUrl||"")}" placeholder="来源链接"><button class="button small primary">保存修改</button></form></details><button class="icon-button calendar-delete" data-action="calendar-delete-sub" data-id="${esc(x.id)}" aria-label="删除订阅">×</button></div></article>`).join(""):`<p class="field-help">还没有订阅。添加打新、逆回购、财报或你自己的日历源。</p>`}</div><form id="calendar-subscription-form" class="calendar-sub-create" novalidate><strong>添加订阅</strong><div class="calendar-form-row"><input class="field" name="name" aria-label="订阅名称" placeholder="例如：A股新股申购" maxlength="60" required><select class="field" name="category">${SUB_CATEGORIES.map(x=>`<option>${x}</option>`).join("")}</select><input class="field" name="sourceUrl" type="url" aria-label="公告源或信息源链接" placeholder="公告源 / 信息源链接"><button class="button primary small">创建订阅</button></div><p class="form-error" id="calendar-sub-error" role="alert"></p><p class="field-help">订阅配置目前由你管理；外部公告源暂不自动抓取，具体日期需手动添加事件。</p></form></aside>`;
+  const screenshot = store.subscriptions.find(x => x.category === "持仓截图同步");
+  const rows = store.subscriptions.map(x => `<article class="calendar-sub-item"><div class="calendar-sub-main"><span class="calendar-sub-dot ${x.enabled ? "enabled" : ""}"></span><div><strong>${esc(x.name)}</strong><small>${esc(x.category)} · ${x.enabled ? "已订阅" : "已暂停"}${x.category === "持仓截图同步" ? " · 每天 22:00 北京时间" : ""}</small>${sourceLink(x.sourceUrl, "数据来源")}</div></div><div class="calendar-sub-actions"><button class="button small ${x.enabled ? "" : "primary"}" data-action="calendar-toggle-sub" data-id="${esc(x.id)}">${x.enabled ? "暂停" : "重新订阅"}</button><details class="calendar-edit-sub"><summary class="button small ghost">编辑</summary><form class="calendar-sub-edit-form" novalidate><input type="hidden" name="id" value="${esc(x.id)}"><input class="field" name="name" value="${esc(x.name)}" maxlength="60" required aria-label="订阅名称"><select class="field" name="category" aria-label="分类">${SUB_CATEGORIES.map(c => `<option ${c === x.category ? "selected" : ""}>${c}</option>`).join("")}</select><input class="field" name="sourceUrl" type="url" value="${esc(x.sourceUrl || "")}" placeholder="来源链接"><button class="button small primary">保存修改</button></form></details><button class="icon-button calendar-delete" data-action="calendar-delete-sub" data-id="${esc(x.id)}" aria-label="删除订阅">×</button></div></article>`).join("");
+  return `<aside class="calendar-subscriptions panel"><div class="calendar-sub-head"><div><span class="eyebrow">订阅管理</span><h2>我的交易订阅</h2><p>订阅事件到点后显示网页闹钟；未确认的提醒会在下次登录时继续显示。</p></div><span class="tag accent">${store.subscriptions.filter(x => x.enabled).length} 已开启</span></div><div class="calendar-sub-list">${rows || '<p class="field-help">还没有订阅。可先开启每天的持仓截图同步提醒。</p>'}</div>${!screenshot ? '<button class="button primary calendar-screenshot-subscribe" type="button" data-action="calendar-subscribe-screenshot">订阅每天 22:00 截图同步</button>' : ''}<form id="calendar-subscription-form" class="calendar-sub-create" novalidate><strong>添加订阅</strong><div class="calendar-form-row"><input class="field" name="name" aria-label="订阅名称" placeholder="例如：A股新股申购" maxlength="60" required><select class="field" name="category" aria-label="订阅分类">${SUB_CATEGORIES.map(x => `<option>${x}</option>`).join("")}</select><input class="field" name="sourceUrl" type="url" aria-label="公告源或信息源链接" placeholder="公告源 / 信息源链接"><button class="button primary small">创建订阅</button></div><p class="form-error" id="calendar-sub-error" role="alert"></p><p class="field-help">截图同步订阅每天 22:00 提醒；其他订阅可在日期详情中关联事件与提醒时间。闹钟只在本网页或下次登录时显示。</p></form></aside>`;
 }
 export async function renderCalendarPage(route, accounts=[]) {
   const candidate=route.params.get("month")||isoLocal().slice(0,7), month=/^\d{4}-(0[1-9]|1[0-2])$/.test(candidate)?candidate:isoLocal().slice(0,7);
@@ -91,13 +106,12 @@ export async function renderCalendarPage(route, accounts=[]) {
   try { sessions=await request(`/markets/calendar?start=${isoLocal(start)}&end=${isoLocal(end)}&markets=CN,HK,US`,{timeout:12000}); } catch(error) { sessions={days:[],error:error.message}; }
   const prev=new Date(year,mm-2,1,12), next=new Date(year,mm,1,12), accountId=route.params.get("account")||accounts[0]?.account_id||""; activeAccount=accountId;
   const prevMonth=isoLocal(prev).slice(0,7), nextMonth=isoLocal(next).slice(0,7);
-  return `<div class="content-page calendar-page"><div class="page-heading"><div><div class="eyebrow">交易日 · 计划 · 订阅</div><h1>交易日历</h1><p>一处安排 A 股、港股、美股交易时段、模拟盘复盘与订阅提醒。</p></div><div class="actions"><button class="button" data-action="calendar-enable-reminders">${store.reminders?"桌面提醒已开启":"开启桌面提醒"}</button></div></div>
+  return `<div class="content-page calendar-page"><div class="page-heading"><div><div class="eyebrow">交易日 · 计划 · 订阅</div><h1>交易日历</h1><p>安排市场日程和订阅提醒。到点的网页闹钟需要手动确认。</p></div><div class="actions"><span class="tag accent">网页闹钟已启用</span></div></div>
     <div class="calendar-market-strip"><div class="calendar-strip-title"><span class="calendar-live-indicator"></span><strong>常规交易时段</strong><small>休市日以交易所日历为准</small></div><div class="calendar-hours"><div><b>A股</b><span>09:30–11:30</span><span>13:00–15:00</span><small>北京时间</small></div><div><b>美股</b><span>09:30–16:00</span><small>${usOpenBeijingTime()}</small></div><div><b>港股</b><span>09:30–12:00</span><span>13:00–16:00</span><small>香港时间</small></div></div></div>
-    ${sessions.error?`<div class="alert">交易所日历暂不可用：${esc(sessions.error)}。日期网格仍可用于记录。</div>`:""}<div class="calendar-layout">${subscriptionMarkup(store)}<div class="calendar-main"><section class="calendar-month panel"><header class="calendar-month-head"><div><span class="eyebrow">日历视图</span><h2>${year}年 ${String(mm).padStart(2,"0")}月</h2></div><div class="calendar-month-actions"><a class="icon-button" href="${calendarURL(prevMonth,`${prevMonth}-01`,view)}" aria-label="上个月">‹</a><a class="button small ghost" href="${calendarURL(today.slice(0,7),today,view)}">今天</a><a class="icon-button" href="${calendarURL(nextMonth,`${nextMonth}-01`,view)}" aria-label="下个月">›</a><div class="calendar-view-switch"><a class="${view==="month"?"active":""}" href="${calendarURL(month,selected,"month")}">月</a><a class="${view==="week"?"active":""}" href="${calendarURL(month,selected,"week")}">周</a></div><button class="button small ghost calendar-collapse-button" type="button" data-action="calendar-toggle-collapse" aria-expanded="${!collapsed}">${collapsed?"展开日历":"收起日历"}</button></div></header>${collapsed?compactWeekMarkup(selected,store,sessions):`<div class="calendar-legend"><span><i class="legend-open"></i>交易日</span><span><i class="legend-ipo"></i>订阅事件</span><span><i class="legend-plan"></i>计划</span><span class="legend-pnl">月格内显示模拟盘日盈亏</span></div>${view==="week"?weekGridMarkup(selected,store,sessions):monthGridMarkup(month,selected,store,sessions,{})}`}</section>${detailMarkup(selected,store,sessions,accounts,accountId)}</div></div><p class="calendar-footnote">交易时段由 XSHG、XHKG、XNYS 交易所日历计算；指数、个股和模拟盘只显示已接入的历史收盘日线。通知仅在工作台打开时检查。</p></div>`;
+    ${sessions.error?`<div class="alert">交易所日历暂不可用：${esc(sessions.error)}。日期网格仍可用于记录。</div>`:""}<div class="calendar-layout">${subscriptionMarkup(store)}<div class="calendar-main"><section class="calendar-month panel"><header class="calendar-month-head"><div><span class="eyebrow">日历视图</span><h2>${year}年 ${String(mm).padStart(2,"0")}月</h2></div><div class="calendar-month-actions"><a class="icon-button" href="${calendarURL(prevMonth,`${prevMonth}-01`,view)}" aria-label="上个月">‹</a><a class="button small ghost" href="${calendarURL(today.slice(0,7),today,view)}">今天</a><a class="icon-button" href="${calendarURL(nextMonth,`${nextMonth}-01`,view)}" aria-label="下个月">›</a><div class="calendar-view-switch"><a class="${view==="month"?"active":""}" href="${calendarURL(month,selected,"month")}">月</a><a class="${view==="week"?"active":""}" href="${calendarURL(month,selected,"week")}">周</a></div><button class="button small ghost calendar-collapse-button" type="button" data-action="calendar-toggle-collapse" aria-expanded="${!collapsed}">${collapsed?"展开日历":"收起日历"}</button></div></header>${collapsed?compactWeekMarkup(selected,store,sessions):`<div class="calendar-legend"><span><i class="legend-open"></i>交易日</span><span><i class="legend-ipo"></i>订阅事件</span><span><i class="legend-plan"></i>计划</span><span class="legend-pnl">月格内显示模拟盘日盈亏</span></div>${view==="week"?weekGridMarkup(selected,store,sessions):monthGridMarkup(month,selected,store,sessions,{})}`}</section>${detailMarkup(selected,store,sessions,accounts,accountId)}</div></div><p class="calendar-footnote">交易时段由 XSHG、XHKG、XNYS 交易所日历计算；网页闹钟按北京时间检查，到点未打开网页时会在下次登录补显示最近一次未确认提醒。</p></div>`;
 }
-export async function mountCalendar(date,accountId,view="month") { loadInsights(date,accountId); if(activeCollapsed)loadWeekPnl(date,accountId);else loadMonthPnl(date.slice(0,7),accountId); checkReminder(); }
-let reminderTimer;
-export function cleanupCalendar(){clearInterval(reminderTimer);reminderTimer=null;}
+export async function mountCalendar(date,accountId,view="month") { loadInsights(date,accountId); if(activeCollapsed)loadWeekPnl(date,accountId);else loadMonthPnl(date.slice(0,7),accountId); renderCalendarAlarm(); }
+export function cleanupCalendar() {}
 async function loadMonthPnl(month,accountId) {
   if(!accountId)return; const [y,m]=month.split("-").map(Number), start=new Date(y,m-1,1,12), end=new Date(y,m,0,12);
   try { const data=await request(`/paper/performance/history?account_id=${encodeURIComponent(accountId)}&start=${isoLocal(start)}&end=${isoLocal(end)}`,{timeout:15000}); const map=Object.fromEntries((data.days||[]).map(x=>[x.date,x]));
@@ -123,15 +137,49 @@ async function loadInsights(date,accountId) {
   const flowEntries=flow?.row?Object.entries(flow.row).filter(([key])=>!/(日期|date)/i.test(key)).slice(0,5):[];
   target.innerHTML=`${selector}${accountMarkup}<div class="calendar-insight-group"><h4>主要市场指数</h4>${groupMarkup||`<p class="field-help">尚无指数历史数据。</p>`}</div>${watchMarkup}<div class="calendar-flow-note"><strong>A股市场资金流</strong>${flowEntries.length?`<div class="calendar-flow-values">${flowEntries.map(([key,value])=>`<span>${esc(key)}<b>${esc(value??"—")}</b></span>`).join("")}</div>`:`<p>暂无已缓存的市场资金流记录</p>`}<small>通用市场资金流不等于北向 / 南向资金。${esc(connect)}</small></div><p class="field-help">日涨跌按所选日与上一条收盘日线计算；缺少历史数据时不会用当前行情倒填。</p>`;
 }
-function checkReminder() {
-  clearInterval(reminderTimer); reminderTimer=setInterval(()=>{const store=readStore();if(!store.reminders||!("Notification" in window)||Notification.permission!=="granted")return;const now=new Date(),date=isoLocal(now),minute=`${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;const items=[...store.plans.map(x=>({...x,title:x.category,note:x.text})),...eventRows(store,date)].filter(x=>x.date===date&&x.time===minute&&!x.notified);for(const x of items){new Notification(x.title||x.category,{body:x.note||x.detail||"打开交易日历查看安排"});x.notified=true;}if(items.length){store.plans=store.plans.map(x=>items.find(i=>i.id===x.id)||x);store.events=store.events.map(x=>items.find(i=>i.id===x.id)||x);writeStore(store);}},30000);
+let alarmTimer = null;
+function renderCalendarAlarm() {
+  const target = document.getElementById('calendar-alarm');
+  if (!target || !getIdentity()) return;
+  const due = dueCalendarAlarms(readStore());
+  const alarm = due[0];
+  target.hidden = !alarm;
+  if (!alarm) { target.innerHTML = ''; return; }
+  target.innerHTML = `<div class="calendar-alarm-head"><span>${icon('calendar')} 日历闹钟</span><small>${due.length > 1 ? `另有 ${due.length - 1} 条待确认` : '待确认'}</small></div><strong>${esc(alarm.title)}</strong><p>${esc(alarm.detail)}</p><small>${esc(alarm.date)} ${esc(alarm.time)} · 北京时间</small><div class="calendar-alarm-actions">${alarm.screenshot ? '<a class="button small ghost" href="#/holdings?import=1">去同步截图</a>' : '<a class="button small ghost" href="#/calendar">查看日历</a>'}<button class="button small primary" type="button" data-action="calendar-alarm-confirm" data-id="${esc(alarm.id)}">确认提醒</button></div>`;
 }
+export function startCalendarAlarms() {
+  clearInterval(alarmTimer);
+  renderCalendarAlarm();
+  alarmTimer = setInterval(renderCalendarAlarm, 30000);
+}
+export function stopCalendarAlarms() {
+  clearInterval(alarmTimer);
+  alarmTimer = null;
+  const target = document.getElementById('calendar-alarm');
+  if (target) { target.hidden = true; target.innerHTML = ''; }
+}
+window.addEventListener('focus', renderCalendarAlarm);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) renderCalendarAlarm(); });
+window.addEventListener('calendar-store-changed', renderCalendarAlarm);
 function rerender(date,view="month"){location.hash=calendarURL(date.slice(0,7),date,view);}
 export function handleCalendarAction(button) {
   const action=button.dataset.action;if(!action?.startsWith("calendar-"))return false;
   const store=readStore(), id=button.dataset.id;
+  if(action==="calendar-alarm-confirm"){
+    const due=dueCalendarAlarms(store);
+    if(!due.some(item=>item.id===id))return true;
+    store.alarmAcknowledged={...(store.alarmAcknowledged||{}),[id]:new Date().toISOString()};
+    if(writeStore(store))renderCalendarAlarm();
+    return true;
+  }
+  if(action==="calendar-subscribe-screenshot"){
+    if(!store.subscriptions.some(item=>item.category==="持仓截图同步")){
+      store.subscriptions.push({id:crypto.randomUUID(),name:"持仓截图同步",category:"持仓截图同步",sourceUrl:"",enabled:true,remindAt:"22:00",createdAt:new Date().toISOString()});
+      if(writeStore(store)){notify("已订阅每天 22:00 持仓截图同步");renderCalendarCurrent();}
+    }
+    return true;
+  }
   if(action==="calendar-toggle-collapse"){const params=new URLSearchParams(location.hash.split("?")[1]||"");if(params.get("collapsed")==="1")params.delete("collapsed");else params.set("collapsed","1");location.hash="/calendar?"+params.toString();return true;}
-  if(action==="calendar-enable-reminders") { const enable=async()=>{if(!("Notification" in window)){notify("当前浏览器不支持桌面通知","error");return;}const permission=await Notification.requestPermission();if(permission!=="granted"){notify("未获得桌面通知权限","error");return;}store.reminders=true;writeStore(store);notify("桌面提醒已开启");renderCalendarCurrent();};enable();return true; }
   if(action==="calendar-delete-plan"||action==="calendar-delete-event"){if(action.endsWith("plan"))store.plans=store.plans.filter(x=>x.id!==id);else store.events=store.events.filter(x=>x.id!==id);if(writeStore(store)){notify("日程已删除");renderCalendarCurrent();}return true;}
   if(action==="calendar-toggle-sub"){store.subscriptions=store.subscriptions.map(x=>x.id===id?{...x,enabled:!x.enabled}:x);if(writeStore(store)){notify("订阅状态已更新");renderCalendarCurrent();}return true;}
   if(action==="calendar-delete-sub"){store.subscriptions=store.subscriptions.filter(x=>x.id!==id);store.events=store.events.map(x=>x.subscriptionId===id?{...x,subscriptionId:""}:x);if(writeStore(store)){notify("订阅已删除，原日程保留为自定义事件");renderCalendarCurrent();}return true;}
@@ -146,8 +194,8 @@ export function addAICalendarPlan(date,category,text){const store=readStore(),co
 export function handleCalendarSubmit(form,values){
   const store=readStore();
   if(form.id==="calendar-plan-form"){const text=(values.text||"").trim();if(!text){const input=form.querySelector('[name="text"]'),error=form.querySelector(".form-error");error.textContent="请填写计划内容。";input.setAttribute("aria-invalid","true");input.focus();return true;}store.plans.push({id:crypto.randomUUID(),date:values.date,time:values.time,category:values.category,text,createdAt:new Date().toISOString()});if(writeStore(store)){notify("计划已保存到日历");renderCalendarCurrent();}return true;}
-  if(form.id==="calendar-event-form"){const title=(values.title||"").trim();if(!title){form.querySelector(".form-error").textContent="请填写事件标题。";form.querySelector('[name="title"]').focus();return true;}const source=safeURL(values.sourceUrl||"");if(values.sourceUrl&&!source){form.querySelector(".form-error").textContent="来源链接需要使用 http 或 https。";form.querySelector('[name="sourceUrl"]').focus();return true;}store.events.push({id:crypto.randomUUID(),date:values.date,time:values.time,title,category:values.category,subscriptionId:values.subscriptionId||"",detail:(values.detail||"").trim(),sourceUrl:source,notified:false});if(writeStore(store)){notify("日历事件已添加");renderCalendarCurrent();}return true;}
-  if(form.id==="calendar-subscription-form"){const name=(values.name||"").trim();if(!name){form.querySelector(".form-error").textContent="请填写订阅名称。";form.querySelector('[name="name"]').focus();return true;}const source=safeURL(values.sourceUrl||"");if(values.sourceUrl&&!source){form.querySelector(".form-error").textContent="信息源链接需要使用 http 或 https。";return true;}store.subscriptions.push({id:crypto.randomUUID(),name,category:values.category,sourceUrl:source,enabled:true});if(writeStore(store)){notify("订阅已创建");renderCalendarCurrent();}return true;}
-  if(form.classList.contains("calendar-sub-edit-form")){const id=values.id,name=(values.name||"").trim(),source=safeURL(values.sourceUrl||"");if(!name){form.querySelector('[name="name"]').focus();return true;}if(values.sourceUrl&&!source){notify("信息源链接需要使用 http 或 https。","error");return true;}store.subscriptions=store.subscriptions.map(x=>x.id===id?{...x,name,category:values.category,sourceUrl:source}:x);store.events=store.events.map(x=>x.subscriptionId===id?{...x,category:values.category}:x);if(writeStore(store)){notify("订阅信息已更新");renderCalendarCurrent();}return true;}
+  if(form.id==="calendar-event-form"){const title=(values.title||"").trim();if(!title){form.querySelector(".form-error").textContent="请填写事件标题。";form.querySelector('[name="title"]').focus();return true;}if(values.subscriptionId&&!values.time){form.querySelector(".form-error").textContent="关联订阅的提醒需要填写时间。";form.querySelector('[name="time"]').focus();return true;}const source=safeURL(values.sourceUrl||"");if(values.sourceUrl&&!source){form.querySelector(".form-error").textContent="来源链接需要使用 http 或 https。";form.querySelector('[name="sourceUrl"]').focus();return true;}store.events.push({id:crypto.randomUUID(),date:values.date,time:values.time,title,category:values.category,subscriptionId:values.subscriptionId||"",detail:(values.detail||"").trim(),sourceUrl:source,notified:false});if(writeStore(store)){notify("日历事件已添加");renderCalendarCurrent();}return true;}
+  if(form.id==="calendar-subscription-form"){const name=(values.name||"").trim();if(!name){form.querySelector(".form-error").textContent="请填写订阅名称。";form.querySelector('[name="name"]').focus();return true;}const source=safeURL(values.sourceUrl||"");if(values.sourceUrl&&!source){form.querySelector(".form-error").textContent="信息源链接需要使用 http 或 https。";return true;}if(values.category==="持仓截图同步"&&store.subscriptions.some(x=>x.category===values.category)){form.querySelector(".form-error").textContent="持仓截图同步已订阅，可在上方暂停或编辑。";return true;}store.subscriptions.push({id:crypto.randomUUID(),name,category:values.category,sourceUrl:source,enabled:true,createdAt:new Date().toISOString(),remindAt:values.category==="持仓截图同步"?"22:00":null});if(writeStore(store)){notify("订阅已创建");renderCalendarCurrent();}return true;}
+  if(form.classList.contains("calendar-sub-edit-form")){const id=values.id,name=(values.name||"").trim(),source=safeURL(values.sourceUrl||"");if(!name){form.querySelector('[name="name"]').focus();return true;}if(values.sourceUrl&&!source){notify("信息源链接需要使用 http 或 https。","error");return true;}if(values.category==="持仓截图同步"&&store.subscriptions.some(x=>x.id!==id&&x.category===values.category)){notify("持仓截图同步已订阅，请编辑现有订阅。","error");return true;}store.subscriptions=store.subscriptions.map(x=>x.id===id?{...x,name,category:values.category,sourceUrl:source,createdAt:x.createdAt||new Date().toISOString(),remindAt:values.category==="持仓截图同步"?"22:00":null}:x);store.events=store.events.map(x=>x.subscriptionId===id?{...x,category:values.category}:x);if(writeStore(store)){notify("订阅信息已更新");renderCalendarCurrent();}return true;}
   return false;
 }

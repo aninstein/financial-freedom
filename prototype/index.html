@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
     <title>AI 投研 — Finch</title>
+    <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
     <link rel="stylesheet" href="/assets/styles.css" />
   </head>
   <body>
@@ -55,17 +56,15 @@
             </button>
             <button class="global-search-submit" type="submit" aria-label="搜索股票">搜索</button>
           </form>
+          <a class="topbar-calendar" id="topbar-calendar" href="#/calendar" aria-label="交易日历"><span class="topbar-calendar-icon" aria-hidden="true"></span><span class="topbar-calendar-label">交易日历</span></a>
           <button
             class="palette-toggle"
             type="button"
             data-action="toggle-market-palette"
             id="market-palette-toggle"
-            aria-label="切换行情涨跌配色"
-            title="切换行情涨跌配色"
+            aria-label="切换市场视图配色"
+            title="切换市场视图配色"
           ><span class="palette-swatch" aria-hidden="true"><i></i><i></i></span><span class="palette-toggle-label" id="market-palette-label">A股视图</span></button>
-          <span class="mode-label"
-            ><span class="status-dot"></span>本地工作空间</span
-          >
           <button class="icon-button utility-toggle" data-action="open-utility" aria-label="打开工作台卡片栏"></button>
         </header>
         <div class="page-scroll" id="page-scroll">
@@ -94,6 +93,7 @@
       <div class="dialog-head"><strong>工作台卡片</strong><button class="icon-button" data-action="close-dialog" aria-label="关闭卡片栏">×</button></div>
       <div id="utility-dialog-content" class="utility-dialog-content"></div>
     </dialog>
+    <aside class="calendar-alarm" id="calendar-alarm" role="alert" aria-live="assertive" aria-label="日历闹钟" hidden></aside>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script type="module" src="/assets/app.js"></script>
   </body>

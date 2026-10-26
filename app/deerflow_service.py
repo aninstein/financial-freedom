@@ -45,7 +45,7 @@ async def serve() -> None:
             line = await reader.readline()
             if not line:
                 return
-            if len(line) > 128_000:
+            if len(line) > 8_000_000:
                 raise ValueError("request_too_large")
             request = json.loads(line)
             if not isinstance(request, dict):
@@ -65,7 +65,7 @@ async def serve() -> None:
             writer.close()
             await writer.wait_closed()
 
-    server = await asyncio.start_unix_server(handle, path=str(path), limit=256_000)
+    server = await asyncio.start_unix_server(handle, path=str(path), limit=8_000_000)
     path.chmod(0o600)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()

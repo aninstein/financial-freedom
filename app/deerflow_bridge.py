@@ -14,6 +14,7 @@ from app.ai_agent import AgentUnavailable
 
 ROOT = Path(__file__).resolve().parent.parent
 RUNTIME_PYTHON = ROOT / "runtime" / ".venv" / "bin" / "python"
+MAX_RESPONSE_BYTES = 8_000_000
 
 
 def socket_path() -> Path:
@@ -44,6 +45,9 @@ async def run_deerflow_research(
     *, run_id: str, owner_id: str, question: str, history: list[dict[str, str]],
     max_tool_calls: int, timeout: float, account_id: str | None = None,
     account_snapshot: dict[str, Any] | None = None,
+    session_id: str | None = None,
+    image_data_url: str | None = None,
+    image_context_available: bool = False,
 ) -> dict[str, Any]:
     if not runtime_ready():
         raise AgentUnavailable("DeerFlow 尚未就绪；请运行 ./scripts/setup-deerflow.sh 并重启 ./run-local.sh")
@@ -51,10 +55,17 @@ async def run_deerflow_research(
         "run_id": run_id, "owner_id": owner_id, "question": question,
         "history": history, "max_tool_calls": max_tool_calls,
         "account_id": account_id, "account_snapshot": account_snapshot,
+        "session_id": session_id,
+        "image_data_url": image_data_url,
+        "image_context_available": image_context_available,
     }
 
     async def exchange() -> dict[str, Any]:
-        reader, writer = await asyncio.open_unix_connection(str(socket_path()))
+        # Tool evidence is returned as one JSON line. The asyncio default
+        # 64 KiB line limit can reject an otherwise completed research run.
+        reader, writer = await asyncio.open_unix_connection(
+            str(socket_path()), limit=MAX_RESPONSE_BYTES
+        )
         try:
             writer.write(json.dumps(payload, ensure_ascii=False, default=str).encode() + b"\n")
             await writer.drain()
@@ -78,3 +89,5 @@ async def run_deerflow_research(
         raise AgentUnavailable("DeerFlow 研究任务超时") from exc
     except (OSError, json.JSONDecodeError) as exc:
         raise AgentUnavailable("DeerFlow worker 连接失败") from exc
+    except ValueError as exc:
+        raise AgentUnavailable("DeerFlow 返回内容超过传输上限，请缩小问题范围后重试") from exc

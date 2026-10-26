@@ -5,6 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     PATH=/app/runtime/.venv/bin:$PATH
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm && \
+    rm -rf /var/lib/apt/lists/*
 RUN python -m venv /app/runtime/.venv
 COPY requirements.txt ./
 COPY vendor/deerflow ./vendor/deerflow

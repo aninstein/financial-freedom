@@ -40,6 +40,15 @@ const liveState = (row) =>
   row.state === "stale" ? "采集已中断" :
   row.source_time ? row.feed === "push" ? "订阅更新" : "批量快照" :
   "行情时间待核实";
+function flashIndexBlock(node, changePercent) {
+  if (!node || changePercent == null || Number(changePercent) === 0 ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const className = Number(changePercent) > 0 ? "index-flash-up" : "index-flash-down";
+  node.classList.remove("index-flash-up", "index-flash-down");
+  void node.offsetWidth;
+  node.classList.add(className);
+  node.addEventListener("animationend", () => node.classList.remove(className), { once: true });
+}
 function updateIndexLive(data, selectedId, fallbackClose, fallbackDay) {
   const rows = new Map(data.indices.map((row) => [row.id, row]));
   for (const [id, row] of rows) {
@@ -48,6 +57,10 @@ function updateIndexLive(data, selectedId, fallbackClose, fallbackDay) {
     const price = card.querySelector("[data-index-price]");
     const change = card.querySelector("[data-index-change]");
     const status = card.querySelector("[data-index-status]");
+    const previousPrice = card.dataset.lastPrice;
+    const nextPrice = row.last == null ? "" : String(row.last);
+    if (previousPrice && nextPrice && previousPrice !== nextPrice) flashIndexBlock(card, row.change_percent);
+    card.dataset.lastPrice = nextPrice;
     price.textContent = row.last == null ? "—" : number(row.last);
     change.textContent = row.change_percent == null ? "—" : percent(row.change_percent);
     change.className = "mono " + (row.change_percent == null ? "" : tone(row.change_percent));
@@ -69,7 +82,11 @@ function updateIndexLive(data, selectedId, fallbackClose, fallbackDay) {
       ? "每秒同步本机 · " + liveTime(data.served_at) + " · AKShare 当前采集间隔至少 " + data.current_poll_seconds + " 秒"
       : "每秒同步本机 · " + liveTime(data.served_at) + " · 指数采集未启用";
   if (!price || !label || !status || !source || !metrics) return;
-  price.textContent = selected?.last == null ? number(fallbackClose) : number(selected.last);
+  const nextSelectedPrice = selected?.last == null ? number(fallbackClose) : number(selected.last);
+  if (price.dataset.liveValue && price.dataset.liveValue !== nextSelectedPrice)
+    flashIndexBlock(price.parentElement, selected?.change_percent);
+  price.dataset.liveValue = nextSelectedPrice;
+  price.textContent = nextSelectedPrice;
   label.textContent = selected?.last == null ? "最近完整日线收盘 · " + (fallbackDay || "暂无") : "盘中指数点位";
   const currentStatus = selected ? liveState(selected) : "暂无盘中快照";
   if (status.textContent !== currentStatus) status.textContent = currentStatus;
@@ -88,8 +105,17 @@ function updateIndexLive(data, selectedId, fallbackClose, fallbackDay) {
     ["成交量 · 源单位", number(selected?.volume, 0)],
     ["成交额 · 源单位", number(selected?.turnover, 0)],
   ];
-  metrics.innerHTML = cells.map(([name, value]) =>
-    '<div class="index-live-metric"><span>' + esc(name) + '</span><strong class="mono">' + esc(value) + '</strong></div>').join("");
+  if (metrics.children.length !== cells.length)
+    metrics.innerHTML = cells.map(([name]) =>
+      '<div class="index-live-metric"><span>' + esc(name) + '</span><strong class="mono">—</strong></div>').join("");
+  cells.forEach(([, value], index) => {
+    const cell = metrics.children[index];
+    const strong = cell.querySelector("strong");
+    if (strong.textContent !== "—" && strong.textContent !== value)
+      flashIndexBlock(cell, selected?.change_percent);
+    strong.textContent = value;
+    if (index === 0) strong.className = "mono " + tone(selected?.change_percent);
+  });
 }
 export function mountIndexLive(selectedId, fallbackClose, fallbackDay, routeSignal) {
   cleanupIndices();

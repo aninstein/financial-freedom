@@ -19,7 +19,7 @@ Agent 是研究助手，不是自动交易员。此 Feature 不增加任何下�
 - **范围控制：** “全市场/大范围”研究必须显式选择市场、筛选条件、数据区间、并发和结果上限，使用后台任务与进度/取消；禁止未限界的全站抓取或对来源造成高频请求。
 - **账户隐私：** Agent 默认不读账户。用户显式开启“结合账户分析”时，只能读取当前选择的只读/手工快照或模拟账户视图；最小化传入模型的数据并记录访问范围。
 - **AI 提供方：** 支持通过服务端配置选择云模型或本地兼容模型；API 密钥只在服务端环境变量/密钥管理中保存。未配置模型时，检索和确定性研究接口仍可用，AI 分析显示未配置。
-- **ENV 配置：** 参考 `dual_ai_voice_demo`，通过 `MODEL_CONFIG_JSON` 配置 provider/model/base_url/api_key_env，通过 `PRIMARY_MODEL` 选择首选模型；`MODEL_TEMPERATURE`、`MODEL_TIMEOUT_SECONDS`、`AGENT_RUN_TIMEOUT_SECONDS`、`AGENT_MAX_TOOL_CALLS` 控制资源上限。
+- **ENV 配置：** 通过 `MODEL_CONFIG_JSON` 配置 provider/model/base_url/api_key_env，通过 `PRIMARY_MODEL` 选择首选模型；`MODEL_TEMPERATURE`、`MODEL_TIMEOUT_SECONDS`、`AGENT_RUN_TIMEOUT_SECONDS`、`AGENT_MAX_TOOL_CALLS` 控制资源上限。
 - **用户确认：** 研究任务可直接提交；AI 生成的候选策略、股票观点和市场观点均是研究结果，必须由用户自行决定下一步。没有 AI 到交易接口的调用路径。
 
 ## 用户故事与验收标准
@@ -127,3 +127,7 @@ Agent 可从本地行情与回测、财报/公告/研报、基金披露、官方
 - 研究接口是有界同步请求，不含后台队列、取消或逐源配额面板。
 - 当前未配置新闻/研报供应商；宽范围筛选只覆盖本地缓存行情。
 - 北向/南向历史流量没有落入本地数据集；实时北向买卖成交额不可用。
+
+## 投资记忆增量
+
+投研聊天由服务端 session 持久化并按 Asia/Shanghai 日期投影到每用户私有 `llm-wiki`。当前会话可沿用自身最近对话；其他会话当天只经派生摘要或 provisional 日报召回，历史只经已发布日报及长短期条目召回。每日 03:00 归档前一日，支持手动重算、来源引用和失败降级。账号设置管理原始会话最多 30 天、归档最多 365 天；删除与更正会使相关召回失效。记忆不能证明当前行情、持仓或交易授权。详细行为和验收见 [投资记忆 OpenSpec](../../openspec/changes/add-investment-llm-wiki-memory/specs/investment-memory-wiki/spec.md)。

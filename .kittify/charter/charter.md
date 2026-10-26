@@ -44,7 +44,7 @@ The user prioritizes live news, reverse repo operations and sector rotation as s
 
 ## Accepted increment 009 (2026-10-26)
 
-The user explicitly replaces mandatory TOTP with password sign-in and password-only confirmation for sensitive paper actions. Optional Volcengine SMS may protect login after configuration; email is deferred. Preserve password hashing, private sessions, CSRF, owner authorization, audit and no-live-trading boundaries. This explicit decision supersedes earlier authenticator enrollment requirements; it does not authorize sending paid SMS or changing the existing owner password during development.
+The user explicitly replaces mandatory TOTP with password sign-in and password-only confirmation for sensitive paper actions. Preserve password hashing, private sessions, CSRF, owner authorization, audit and no-live-trading boundaries. This explicit decision supersedes earlier authenticator enrollment requirements; it does not authorize sending paid SMS or changing the existing owner password during development.
 
 ## Accepted increment 010 (2026-10-26)
 

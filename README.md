@@ -1,5 +1,7 @@
 # Financial Freedom
 
+本项目采用 [PolyForm Noncommercial 1.0.0](LICENSE)：允许非商业使用、学习和研究；商业使用未获授权。因禁止商业使用，本项目属于**源码可见**，并非 OSI 定义的开源软件。第三方依赖保留各自许可证。公开发布前请先看[发布核对](docs/PUBLICATION.md)。
+
 本地优先的量化工作台：市场状态、行情数据、观察列表、手工账户快照、模拟交易、确定性历史研究和 AI 投研/模拟交易 Agent。模拟订单写本地隔离账本；当前专注模拟盘与投研，实盘接入暂缓。
 
 ## 当前能力
@@ -7,12 +9,13 @@
 - FastAPI 本地服务，默认只绑定 `127.0.0.1:8000`。
 - AKShare 行情适配器：A 股/创业板、港股、美股、ETF、开放式基金公布净值、上海黄金交易所 Au99.99。A 股东方财富失败后依次尝试腾讯和新浪接口；港股全市场端点失败或超时时，观察列表内的港股代码改用新浪单票报价，保留源时间并按年龄标记新鲜度。美股全市场现价端点在当前环境失败，新浪全市场需要抓取 917 页，本地未启用；对观察列表内的美股，改用新浪同源的单票延迟报价（公开接口标注 15 分钟延迟），无法获取时才回退到日线收盘价。日线数据只用于查看，不能用于模拟成交。
 - 交易所日历状态：XNYS、XSHG、XHKG；上海黄金按交易所常规时段及 XSHG 假日表推算，节假日临时安排以 SGE 公告为准。
-- MySQL/InnoDB 持久化行情快照、日线历史、观察列表、身份、研究记录和模拟账本；Docker Compose 管理数据库、Web 与 Agent worker。
+- MySQL/InnoDB 持久化行情快照、日线历史、观察列表、身份、研究记录和模拟账本；Docker Compose 管理数据库与 Web。
 - 手工录入的账户快照与模拟账户分开展示；按币种保存，不做无 FX 来源的汇总换算。
 - 五类独立模拟盘：美股、港股、A股主板、创业板、科创板。可自行开户/设置初始虚拟资金、查看现金/冻结/可卖持仓/盈亏。原有账户与订单保留；新增三类A股默认盘，分别100万元虚拟资金。港股同步HKEX官方每手股数，也可明确录入手工模拟规则。主板/创业板100股整数买入，科创板至少200股整数递增，A股T+1可卖。
 - 支持 AKShare 日线手动拉取和观察列表自动回补/增量采集，带内容哈希的数据集版本，以及 SMA 趋势基线回测；回测包含买入持有对照、手续费/滑点假设、最大回撤、年化波动和夏普比率，使用非复权数据并明确标记为历史研究。
 - 实盘代码仅保留为草案，不注册路由、不读取券商配置或调用交易接口。
 - AI Agent 可用服务端 `.env` 配置 OpenAI-compatible 或 Ollama 模型；可读取行情/日线、筛选基金、查询基金定期报告披露的持仓和重大买入/卖出变动、读取 A 股财务摘要、运行 SMA 历史回测，并检索用户上传的文本 PDF/TXT/Markdown/CSV。基金操作数据是历史披露，不是实时交易流水。所有研究保留运行记录和来源证据；普通聊天继续只读；“账户与模拟盘”可明确授权AI在固定账户、股票白名单、金额和笔数限额内执行一轮模拟买卖，保留模型、原因、来源和实际订单。
+- 投研对话由服务端保存，并按用户生成 `llm-wiki`：当天共享摘要、每日归档、短期事项和带来源的长期偏好。聊天页「投资记忆」可浏览和编辑 Markdown；头像菜单「记忆保留期限」管理原始会话 1–30 天、归档记忆 1–365 天的留存。
 
 ## Agent 工作空间
 
@@ -25,7 +28,7 @@
 - `#/sectors`：A 股行业目录、成分股、行业主力资金原始字段；公共源不可用时展示缺口。
 - `#/research`、`#/documents`、`#/accounts`、`#/orders`、`#/settings`、`#/security`：策略实验、资料、账户、模拟订单、ENV 配置状态、会话管理和密码修改。
 
-右侧显示自选与市场时钟；窄屏通过顶栏按钮打开。会话草稿在页面切换时保留在内存；刷新页面后可通过“最近研究”重新打开服务端已保存的研究。行业资金不等于北向资金，来源未提供的数据不会填零。
+右侧显示自选与市场时钟；窄屏通过顶栏按钮打开。会话草稿在页面切换时保留在内存；刷新页面后可从服务端会话列表继续保留期内的对话。行业资金不等于北向资金，来源未提供的数据不会填零。
 
 ## Docker 启动
 
@@ -33,7 +36,7 @@
 ./scripts/docker-up.sh
 ```
 
-脚本生成 Git 忽略的 MySQL 密钥，并启动 MySQL、一次性迁移任务、DeerFlow worker 与 Web。首次启动会从旧 `data/identity.sqlite3` 和 `data/financial_freedom.sqlite3` 只读导入并逐表核对；旧文件保留。旧库有一条缺少对应账户的外部持仓，迁移原样保留并记入[调研报告](docs/STORAGE_ENGINE_RESEARCH.md)。Web 仅在宿主机 `127.0.0.1:8000` 开放，MySQL 不映射宿主端口。
+脚本生成 Git 忽略的 MySQL 密钥，并启动 MySQL、一次性迁移任务、DeerFlow worker 与 Web。首次启动会从旧 `data/identity.sqlite3` 和 `data/financial_freedom.sqlite3` 只读导入并逐表核对；旧文件保留。Web 仅在宿主机 `127.0.0.1:8000` 开放，MySQL 不映射宿主端口。
 
 首次没有旧账号时，在终端创建唯一账号：
 
@@ -41,29 +44,29 @@
 docker compose exec web python -m app.manage init-owner
 ```
 
-然后打开 <http://127.0.0.1:8000>，用账号和密码登录。已有账号在迁移校验通过后继续使用原密码。默认无需验证器；需要短信登录保护时按 docs/SMS_SETUP.md 配置火山短信。未登录时，行情、账户、资料与API文档均不可访问。没有默认密码或公开注册。
+然后打开 <http://127.0.0.1:8000>，用账号和密码登录。已有账号在迁移校验通过后继续使用原密码。默认采用密码登录。未登录时，行情、账户、资料与API文档均不可访问。没有默认密码或公开注册。
 
 首次批量行情抓取需要时间；上游不可访问时保留数据缺口。API文档在登录后访问 <http://127.0.0.1:8000/docs>。安全与恢复方式见 [docs/SECURITY.md](docs/SECURITY.md)。
 
 可通过 `.env.example` 中列出的环境变量配置刷新频率、模型、数据请求并发数和日线失败重试间隔。Compose 管理 MySQL 凭据和数据卷；私密 `.env`、`.runtime/secrets/` 不进入镜像或 Git。每个模拟账户的初始资金在开户表单自行填写。
 
-### 富途行情接入
+### 行情数据源接入
 
-这台 Mac 已安装富途官方 OpenD，私密 `.env` 中也已启用 `FUTU_ENABLED=true`。运行 `./run-local.sh` 或 `./scripts/docker-up.sh` 时，启动脚本会检查本机 OpenD：未监听时自动打开官方窗口，已有登录则直接复用。登录入口也在本平台「数据与模型」；点击“打开富途 OpenD 登录窗口”会切换到官方应用，由你在那里完成登录、问卷和协议。平台不接收富途密码或验证码。Docker 容器通过 `host.docker.internal` 连接 Mac 上的 OpenD；页面显示连接及行情状态。模拟交易始终在本地模拟账本执行。接口覆盖范围和回退规则见 [大盘行情来源与富途配置](docs/LIVE_INDEX_FEEDS.md)，更多官方接口的适用性与接入优先级见 [富途 OpenD API 能力盘点](docs/FUTU_API_SURVEY.md)。
+如已安装富途官方 OpenD，可在私密 `.env` 中启用 `FUTU_ENABLED=true`。运行 `./run-local.sh` 或 `./scripts/docker-up.sh` 时，启动脚本会检查本机 OpenD：未监听时自动打开官方窗口，已有登录则直接复用。登录入口也在本平台「数据与模型」；点击“打开富途 OpenD 登录窗口”会切换到官方应用，由你在那里完成登录、问卷和协议。平台不接收富途密码或验证码。Docker 容器通过 `host.docker.internal` 连接 Mac 上的 OpenD；页面显示连接及行情状态。模拟交易始终在本地模拟账本执行。接口覆盖范围和回退规则见 [大盘行情来源与富途配置](docs/LIVE_INDEX_FEEDS.md)，更多接口信息见 [数据源接入说明](docs/DATA_SOURCE_SETUP.md)。
 
-备份数据库：`./scripts/docker-backup.sh`。备份保存在 `.runtime/backups/`，请与 `.env`、`.runtime/secrets/` 一起加密保管。`docker compose down` 不删除数据卷；不要使用 `down -v` 清除卷。
+备份数据库与投资 wiki：`./scripts/docker-backup.sh`。备份保存在 `.runtime/backups/`，请与 `.env`、`.runtime/secrets/` 一起加密保管。`docker compose down` 不删除数据卷；不要使用 `down -v` 清除卷。记忆目录与恢复步骤见 [投研记忆说明](docs/INVESTMENT_MEMORY.md)。
 
 ### 配置 AI Agent
 
-在项目根目录的本地 `.env` 中配置模型，密钥放在单独的环境变量里。配置方式参考 `/Users/bytedance/work/dual_ai_voice_demo` 的 `MODEL_CONFIG_JSON` / `PRIMARY_MODEL`：
+在项目根目录的本地 `.env` 中配置模型，密钥放在单独的环境变量里。使用 `MODEL_CONFIG_JSON` / `PRIMARY_MODEL`：
 
-普通投研对话默认使用 DeerFlow 2.1。Docker 镜像安装仓库内固定源码快照，Compose 单独启动 worker。研究运行记录在 MySQL，DeerFlow 单次任务状态使用内存后端，不再创建 SQLite checkpoint；服务中断的单次推理需重新发起。模型由 `.env` 选择。`/api/v1/ai/status` 返回 `runtime` 和 `runtime_ready`；如需临时回退旧循环，设置 `AI_AGENT_RUNTIME=legacy` 并重启容器。未缓存的六位 A 股日线会在研究时尝试补齐最近一年已完成交易日数据，采集失败会显示数据缺口。模拟盘 AI 一轮交易仍走原受限执行器。
+普通投研对话默认使用固定版本的公开源码 [DeerFlow](https://github.com/bytedance/deer-flow) worker，通过受限工具桥接本项目的行情和研究能力。研究运行记录在 MySQL；模型由 `.env` 选择。`/api/v1/ai/status` 返回运行时与连接状态。模拟盘 AI 仍走独立的受限执行器。
 
 ```dotenv
 MODEL_CONFIG_JSON='[{"provider":"openai","model":"你的模型名称","base_url":"https://你的兼容服务/v1","api_key_env":"AI_MODEL_API_KEY"}]'
+AI_AGENT_RUNTIME=deerflow
 PRIMARY_MODEL=你的模型名称
 AI_MODEL_API_KEY=你的服务端密钥
-AI_AGENT_RUNTIME=deerflow
 MODEL_TEMPERATURE=0.2
 MODEL_TIMEOUT_SECONDS=45
 AGENT_RUN_TIMEOUT_SECONDS=120
@@ -77,17 +80,22 @@ MODEL_CONFIG_JSON='[{"provider":"ollama","model":"本地模型名称","base_url"
 PRIMARY_MODEL=本地模型名称
 ```
 
-在私密 `.env` 配置模型，修改后运行 `docker compose up -d --force-recreate web deerflow`。`/api/v1/ai/status` 会显示模型是否就绪，不会返回密钥。DeerFlow 投研使用 `PRIMARY_MODEL` 指定的首选模型；`AI_MODEL_FALLBACK_ENABLED` 仅适用于旧循环。模型端点需支持 OpenAI Chat Completions 工具调用。若模型运行在宿主机，请使用容器可访问的地址，例如 `host.docker.internal`，不要填容器自身的 `127.0.0.1`。
+在私密 `.env` 配置模型，修改后运行 `docker compose up -d --force-recreate web deerflow`。`/api/v1/ai/status` 会显示模型是否就绪，不会返回密钥。DeerFlow 投研使用 `PRIMARY_MODEL` 指定的首选模型；`AI_MODEL_FALLBACK_ENABLED` 仅适用于内置循环。模型端点需支持 OpenAI Chat Completions 工具调用。若模型运行在宿主机，请使用容器可访问的地址，例如 `host.docker.internal`，不要填容器自身的 `127.0.0.1`。
+
+聊天框支持直接粘贴剪贴板图片（`⌘V` / `Ctrl+V`）；粘贴后立即交给支持视觉的模型预解析，无需先写提示词。支持 PNG、JPEG、GIF、WebP，单张上限 5 MB。原图、文件名、大小、尺寸、SHA-256 和解析文本按当前账号与会话保存在 MySQL，后续可在同一会话追问或导入持仓；删除会话或原始会话到期时清理。截图中未显示代码的持仓会保留在核对草稿，补齐代码后才能保存。官方 DeepSeek 端点的 `deepseek-flash` 自动开启视觉能力；其他模型请在对应的 `MODEL_CONFIG_JSON` 项显式设置 `"supports_vision":true`，并确认服务端模型确实接受 OpenAI 兼容的图片输入。未开启视觉能力时界面不显示图片预览，粘贴图片会提示当前模型不支持。修改配置后重启 `web` 和 `deerflow`。
 
 研报/财报可从页面导入可提取文本的 PDF、TXT、Markdown 或 CSV，原件存放在 MySQL，支持下载、按页/文本片段检索和删除；删除时会清理历史研究记录中的对应文档证据，扫描版 PDF 暂不做 OCR。个股财务摘要和基金持仓在 Agent 查询时调用 AKShare，受上游稳定性影响。北向实时买卖成交额已经停止公开披露，Agent 会说明数据缺口，不会拿空值当作零。宽范围扫描仅能覆盖本地已缓存行情，尚未配置付费新闻/研报源。
 
 AI 使用要求本机有对应数据：个股历史指标需要已拉取日线；策略研究需要本地有足够日线；大盘扫描基于当前缓存快照。行情源可能不可用；模拟交易与回测要求本地有对应行情/日线数据。
+
+Skills 和 MCP 在「数据与模型」配置；也可在聊天中发送安装公开 GitHub Skill 或 `mcpServers` JSON 的明确请求。ZIP 在该设置页上传。配置、权限与支持范围见 [Agent 扩展接入说明](docs/AGENT_EXTENSIONS.md)。
 
 ## Specs 与调研
 
 - [Spec Kitty 项目章程](.kittify/charter/charter.md)
 - [初始版本完整 Spec](kitty-specs/001-quant-trading-foundation/spec.md)
 - [AI 投研 Agent Spec](kitty-specs/002-ai-investment-research-agent/spec.md)
+- [投资记忆 OpenSpec](openspec/changes/add-investment-llm-wiki-memory/specs/investment-memory-wiki/spec.md)
 - [个股资料与身份安全 Spec](kitty-specs/004-stock-dossier-and-identity/spec.md)
 - [个股数据源调研](docs/STOCK_DATA_SOURCES.md)
 - [登录、安全与本地恢复](docs/SECURITY.md)
@@ -125,6 +133,8 @@ AI 使用要求本机有对应数据：个股历史指标需要已拉取日线�
 
 ## 当前重点：模拟交易与投研
 
+“我的持仓”先按 CNY/HKD/USD 选择币种，再按股票、基金、黄金查看和录入；黄金 ETF/联接基金可用基金代码归入黄金，份额按“份”显示。这里支持手工登记真实持仓，也可上传券商持仓截图生成待核对的识别草稿；保存后按最新可用行情计算参考市值与收益率，并单独显示截图记录的收益率供校准。视觉识别需要在“数据与模型”配置支持图片的模型。在“交易日历”订阅“持仓截图同步”后，每天北京时间 22:00 出现需要确认的网页闹钟；如果当时未登录，下一次登录会补显示。日历订阅及闹钟确认状态保存在当前浏览器，不会向系统或手机发送推送。
+
 - `#/accounts`：创建多次独立模拟实验，自定市场和初始资金；单盘/全部清零重开。清零需本人确认，升级不执行任何清零。
 - `#/orders`：手动模拟委托与受限AI单轮执行。支持美股、港股、A股主板、创业板和科创板，账本按账户隔离。
 - 个股详情：K线、公司资料、财务三表、资金、公告与研报目录；增加“历史周期”标签和五年日线采集。
@@ -148,12 +158,10 @@ Agent研究顺序为“新闻/政策流动性→大盘→行业轮动→候选�
 
 数据源为公共轮询，不能保证秒级实时；轮动今日/5/10日排名差不是跨日名次变化，历史快照从实际采集开始积累。源超时/排队时页面保留缺口，后台完成后存储，稍后刷新可见。见[008 Spec](kitty-specs/008-news-liquidity-sector-rotation/spec.md)。
 
-## 009 登录简化与火山短信
+## 账号登录
 
-按最新要求，默认账号密码登录；模拟交易等敏感操作仅重验当前账户密码。已有账号和密码不变，升级后刷新网页重新登录即可，不再绑定验证器。可选火山短信登录：配置后将AUTH_LOGIN_VERIFICATION改为sms，密码通过后再收短信。未配短信时默认password模式直接可用。
-
-短信使用AK/SK、消息组、已审核签名与模板，不是方舟API Key；配置仅在本机ENV，example为空。见[配置说明](docs/SMS_SETUP.md)及[009 Spec](kitty-specs/009-password-login-and-volc-sms/spec.md)。邮箱验证未接入。
+默认账号密码登录；模拟交易等敏感操作仅重验当前账户密码。没有公开注册和默认密码。
 
 ## 大盘指数快照
 
-大盘与指数页每秒从本机快照更新点位、涨跌幅及开高低等字段。默认 AKShare 后台批量采集，不能保证交易所秒级行情。可配置 Longbridge OpenAPI 订阅推送；权限与配置见 [docs/LIVE_INDEX_FEEDS.md](docs/LIVE_INDEX_FEEDS.md)，实现范围见 [kitty-specs/010-live-index-feed/spec.md](kitty-specs/010-live-index-feed/spec.md)。
+大盘与指数页每秒从本机快照更新点位、涨跌幅及开高低等字段。默认 AKShare 后台批量采集，不能保证交易所秒级行情。可配置 Longbridge OpenAPI 订阅推送；权限与配置见 [数据源接入说明](docs/DATA_SOURCE_SETUP.md)，实现范围见 [kitty-specs/010-live-index-feed/spec.md](kitty-specs/010-live-index-feed/spec.md)。

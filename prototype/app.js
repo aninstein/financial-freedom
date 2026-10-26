@@ -30,6 +30,7 @@ import {
   mountSecurityPage,
 } from "./identity.js";
 import { stockOverview, mountStock, updateChartRoute, dossierTab } from "./stock.js";
+import { renderGold, handleGoldAction } from "./gold.js";
 import {
   renderCalendarPage,
   mountCalendar,
@@ -37,8 +38,13 @@ import {
   handleCalendarAction,
   handleCalendarSubmit,
   addAICalendarPlan,
+  startCalendarAlarms,
+  stopCalendarAlarms,
 } from "./calendar.js";
 import { API, request, postOrder } from "./api.js";
+import { extensionsMarkup, mountExtensions } from "./agent-extensions.js";
+import { renderWikiPage, handleWikiAction } from "./investment-wiki.js";
+import { renderHoldings, handleHoldingsAction, handleHoldingsSubmit, handleHoldingsScreenshot, previewChatHoldingsScreenshot, clearHoldingsDraft, isHoldingsImportIntent } from "./holdings.js";
 import { installInstrumentSearch, resolveInstrument } from "./instrument-search.js";
 import {
   esc,
@@ -74,14 +80,15 @@ const features = [
   ["calendar", "calendar", "交易日历", "#calendar", "市场开闭市、计划与打新订阅"],
   ["watchlist", "star", "我的自选", "#watchlist", "关注标的、价格和涨跌幅"],
   ["markets", "chart", "市场总览", "#markets", "多市场行情与市场广度"],
-  ["indices", "chart", "大盘与指数", "#indices", "主要指数与市场表现"],
+  ["gold", "coins", "黄金行情", "#gold", "上金所现货报价、日线走势与相关新闻"],
+  ["indices", "candles", "大盘与指数", "#indices", "主要指数与市场表现"],
   ["news", "file", "新闻与流动性", "#news", "财经快讯与政策事件"],
-  ["liquidity", "chart", "央行流动性", "#liquidity", "逆回购公告与流动性事件"],
+  ["liquidity", "bank", "央行流动性", "#liquidity", "逆回购公告与流动性事件"],
   ["flows", "wallet", "资金与基金", "#flows", "资金统计、基金与披露"],
   ["sectors", "layers", "板块轮动与资金", "#sectors", "行业强弱、轮动与成分股"],
   ["research", "flask", "策略研究", "#research", "策略实验、回测与研究记录"],
   ["documents", "file", "研报资料", "#documents", "导入资料并交给 Agent 分析"],
-  ["trading", "orders", "模拟交易", "#trading", "模拟账户、持仓与订单"],
+  ["holdings", "wallet", "我的持仓", "#holdings", "股票、基金与黄金持仓"],
   ["security", "shield", "账户安全", "#security", "身份验证与账户安全设置"],
   ["settings", "settings", "数据与模型", "#settings", "Agent 配置、行情源和偏好"],
 ];
@@ -93,10 +100,11 @@ const readRailPrefs = () => {
     return {
       cards: [...new Set(valid)].length ? [...new Set(valid)] : defaultRail,
       wide: value.wide === true,
+      visible: value.visible !== false,
       width: Math.min(Math.floor(window.innerWidth * 0.5), Math.max(270, Number(value.width) || 320)),
     };
   } catch (_error) {
-    return { cards: defaultRail, wide: false, width: 320 };
+    return { cards: defaultRail, wide: false, visible: true, width: 320 };
   }
 };
 const railPrefs = readRailPrefs();
@@ -139,15 +147,22 @@ const state = {
   accounts: [],
   messages: [],
   chatSessions: [],
+  serverChatSessions: [],
+  legacyChatSessions: [],
+  memoryEntries: [],
+  memoryStatus: "ready",
   sessionQuery: "",
   activeChatId: null,
   railCards: railPrefs.cards,
   railWide: railPrefs.wide,
+  railVisible: railPrefs.visible,
   railWidth: railPrefs.width,
   expandedRailCard: null,
   railNotice: null,
   calendarDraft: null,
   draft: "",
+  pastedImage: null,
+  sessionImage: null,
   sending: false,
   accountId: null,
   route: null,
@@ -163,6 +178,7 @@ const titles = {
   chat: "AI 投研",
   watchlist: "我的自选",
   markets: "市场总览",
+  gold: "黄金行情",
   indices: "大盘与指数",
   news: "新闻与流动性",
   liquidity: "央行流动性",
@@ -171,8 +187,9 @@ const titles = {
   stocks: "个股详情",
   research: "策略研究",
   documents: "研报资料",
-  trading: "模拟交易",
+  holdings: "我的持仓",
   settings: "数据与模型",
+  memory: "投资记忆",
   calendar: "交易日历",
 };
 const canonical = (id) => {
@@ -184,10 +201,11 @@ const canonical = (id) => {
 };
 function route() {
   const aliases = {
-    live: "trading",
-    accounts: "trading",
-    account: "trading",
-    orders: "trading",
+    live: "holdings",
+    accounts: "holdings",
+    account: "holdings",
+    orders: "holdings",
+    trading: "holdings",
     quotes: "markets",
     market: "markets",
     "ai-research": "chat",
@@ -199,8 +217,6 @@ function route() {
   const [path, query = ""] = hash.split("?");
   const parts = path.split("/").filter(Boolean);
   const params = new URLSearchParams(query);
-  if (!params.has("tab") && ["accounts", "account", "live", "orders"].includes(parts[0]))
-    params.set("tab", parts[0] === "orders" ? "orders" : "accounts");
   return {
     name: aliases[parts[0]] || parts[0] || "chat",
     id: parts[1] ? decodeURIComponent(parts.slice(1).join("/")) : null,
@@ -208,25 +224,35 @@ function route() {
   };
 }
 function navItem(id, glyph, label, href = `#/${id}`) {
-  const active = state.route?.name === id || (id === "watchlist" && state.route?.name === "stocks") || (id === "news" && state.route?.name === "liquidity");
+  const active = state.route?.name === id ||
+    (id === "watchlist" && state.route?.name === "stocks") || (id === "news" && state.route?.name === "liquidity");
   return `<a class="nav-item" href="${href}" ${active ? 'aria-current="page"' : ""}>${icon(glyph)}<span>${label}</span>${id === "watchlist" ? `<span class="nav-count">${state.watch.length}</span>` : ""}</a>`;
 }
 function navMarkup() {
   const more = [
-    ["市场研究", ["indices", "news", "liquidity", "flows", "sectors"]],
-    ["研究工具", ["research", "documents", "trading"]],
+    ["市场研究", ["indices", "news", "liquidity", "flows", "sectors", "gold"]],
+    ["研究工具", ["research", "documents"]],
   ];
-  return `<div class="nav-primary">${navItem("chat", "chat", "AI 投研")}${navItem("calendar", "calendar", "交易日历")}${navItem("watchlist", "star", "我的自选")}${navItem("markets", "chart", "市场总览")}</div><details class="nav-more"><summary><span>${icon("grid")}更多工具</span><span class="nav-more-caret">⌄</span></summary>${more.map(([title, ids]) => `<section class="nav-subgroup"><div class="nav-label">${title}</div>${ids.map((id) => {
+  return `<div class="nav-primary">${navItem("holdings", "wallet", "我的持仓")}${navItem("watchlist", "star", "我的自选")}${navItem("markets", "globe", "市场总览")}</div><details class="nav-more"><summary><span>${icon("grid")}更多工具</span><span class="nav-more-caret">⌄</span></summary>${more.map(([title, ids]) => `<section class="nav-subgroup"><div class="nav-label">${title}</div>${ids.map((id) => {
     const feature = features.find((x) => x[0] === id);
     const label = id === "liquidity" ? "央行流动性" : feature?.[2] || id;
-    return navItem(id, id === "liquidity" ? "chart" : feature?.[1] || "file", label);
+    return navItem(id, feature?.[1] || "file", label);
   }).join("")}</section>`).join("")}</details>`;
 }
 function identityMenuMarkup() {
   const identity = getIdentity();
   const user = identity?.user || {};
   const username = user.username || identity?.username || "私人空间";
-  return `<div class="account-menu-card"><div class="account-menu-avatar">${esc(username.slice(0, 1).toUpperCase())}</div><div><strong>${esc(username)}</strong><small>个人投研空间 · 本地账户</small></div></div><div class="account-menu-links"><a href="#/security">${icon("shield")}账户安全 <span>密码与验证设置</span></a><a href="#/settings">${icon("settings")}工作台设置 <span>Agent、行情源与偏好</span></a></div><button class="button ghost account-signout" data-action="sign-out">退出登录</button>`;
+  return `<div class="account-menu-card"><div class="account-menu-avatar">${esc(username.slice(0, 1).toUpperCase())}</div><div><strong>${esc(username)}</strong><small>个人投研空间 · 本地账户</small></div></div><div class="account-menu-links"><a href="#/security">${icon("shield")}账户安全 <span>密码与验证设置</span></a><a href="#/settings?section=memory">${icon("file")}记忆保留期限 <span>会话原文与归档记忆</span></a><a href="#/settings">${icon("settings")}工作台设置 <span>Agent 与行情源</span></a></div><button class="button ghost account-signout" data-action="sign-out">退出登录</button>`;
+}
+const sessionDayOpen = new Map();
+function shanghaiDay(value) {
+  const date = value ? new Date(value) : new Date();
+  if (Number.isNaN(date.getTime())) return '未知日期';
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(date).map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }
 function sessionListMarkup() {
   const query = state.sessionQuery.trim().toLocaleLowerCase();
@@ -237,16 +263,29 @@ function sessionListMarkup() {
       .toLocaleLowerCase();
     return searchable.includes(query);
   });
-  return sessions.map((session) => `<div class="session-row ${session.id === state.activeChatId ? "is-active" : ""}"><button class="recent-button" data-action="open-session" data-id="${esc(session.id)}" title="${esc(session.title)}">${esc(session.title)}</button><button class="session-delete" data-action="delete-session" data-id="${esc(session.id)}" aria-label="删除会话 ${esc(session.title)}">${icon("close")}</button></div>`).join("") || `<p class="field-help session-empty">${query ? "没有匹配的投研对话" : "新建会话后会保存在这里"}</p>`;
+  if (!sessions.length) return `<p class="field-help session-empty">${query ? "没有匹配的投研对话" : "新建会话后会保存在这里"}</p>`;
+  const groups = new Map();
+  for (const session of sessions) {
+    const day = shanghaiDay(session.updated_at || session.created_at);
+    if (!groups.has(day)) groups.set(day, []);
+    groups.get(day).push(session);
+  }
+  const today = shanghaiDay();
+  const yesterday = shanghaiDay(Date.now() - 86400000);
+  return [...groups].map(([day, items], index) => {
+    const label = day === today ? '今天' : day === yesterday ? '昨天' : day;
+    const expanded = query || (sessionDayOpen.has(day) ? sessionDayOpen.get(day) : index === 0 || items.some((item) => item.id === state.activeChatId));
+    return `<details class="session-day" data-day="${esc(day)}" ${expanded ? 'open' : ''}><summary><span>${esc(label)}</span><small>${items.length}</small></summary><div class="session-day-list">${items.map((session) => `<div class="session-row ${session.id === state.activeChatId ? 'is-active' : ''}"><button class="recent-button" data-action="open-session" data-id="${esc(session.id)}" title="${esc(session.title)}">${esc(session.title)}${session.source === 'browser' ? '<small>浏览器旧会话</small>' : session.source === 'research' ? '<small>历史研究</small>' : ''}</button>${session.source === 'server' ? `<button class="session-delete" data-action="delete-session" data-id="${esc(session.id)}" aria-label="删除会话 ${esc(session.title)}">${icon('close')}</button>` : ''}</div>`).join('')}</div></details>`;
+  }).join('');
 }
 function renderSidebar() {
   const configured = state.status?.enabled;
   const username = getIdentity()?.user?.username || getIdentity()?.username || "私人空间";
-  const secondaryRoute = Boolean(state.route?.name && !["chat", "calendar", "watchlist", "markets"].includes(state.route.name));
+  const secondaryRoute = Boolean(state.route?.name && !["chat", "calendar", "holdings", "watchlist", "markets"].includes(state.route.name));
   const desktopMoreOpen = $("#sidebar .nav-more")?.open || secondaryRoute;
   const mobileMoreOpen = $("#mobile-nav .nav-more")?.open || secondaryRoute;
   $("#sidebar").innerHTML =
-    `<div class="brand-row"><a class="brand" href="#/chat"><div class="brand-mark">${icon("spark")}</div>Finch<span>AI 投研</span></a><a class="brand-calendar" href="#/calendar" aria-label="打开交易日历" title="交易日历">${icon("calendar")}</a></div><button class="button ghost new-chat" data-action="new-chat" ${state.sending ? "disabled" : ""}>${icon("plus")} 新建会话</button><nav class="nav-group" aria-label="工作台主导航">${navMarkup()}</nav><div class="session-heading"><span>${icon("chat")}投研对话</span><small>${state.chatSessions.length} 个</small></div><label class="session-search" aria-label="搜索投研对话">${icon("search")}<input id="session-query" type="search" value="${esc(state.sessionQuery)}" placeholder="搜索投研对话" autocomplete="off" /></label><div class="recent-list session-list" id="session-results" aria-label="投研对话">${sessionListMarkup()}</div><div class="sidebar-bottom"><button class="runtime-row account-trigger" data-action="account-menu" aria-haspopup="dialog"><span class="avatar-local">${esc(username.slice(0, 1).toUpperCase())}</span><span class="account-summary"><strong>${esc(username)}</strong><small>${identitySecurityLabel()}</small></span>${icon("settings")}</button><div class="agent-state"><span class="status-dot ${configured ? "ready" : "warn"}"></span>${configured ? "Agent 已配置" : "Agent 待配置"}</div></div>`;
+    `<div class="brand-row"><a class="brand" href="#/chat"><div class="brand-mark">${icon("spark")}</div>Finch<span>AI 投研</span></a></div><button class="button ghost new-chat" data-action="new-chat" ${state.sending ? "disabled" : ""}>${icon("plus")} 新建会话</button><nav class="nav-group" aria-label="工作台主导航">${navMarkup()}</nav><div class="session-heading"><span>${icon("chat")}投研对话</span><small>${state.chatSessions.length} 个</small></div><label class="session-search" aria-label="搜索投研对话">${icon("search")}<input id="session-query" type="search" value="${esc(state.sessionQuery)}" placeholder="搜索投研对话" autocomplete="off" /></label><div class="recent-list session-list" id="session-results" aria-label="投研对话">${sessionListMarkup()}</div><div class="sidebar-bottom"><button class="runtime-row account-trigger" data-action="account-menu" aria-haspopup="dialog"><span class="avatar-local">${esc(username.slice(0, 1).toUpperCase())}</span><span class="account-summary"><strong>${esc(username)}</strong><small>${identitySecurityLabel()}</small></span>${icon("settings")}</button><div class="agent-state"><span class="status-dot ${configured ? "ready" : "warn"}"></span>${configured ? "Agent 已配置" : "Agent 待配置"}</div></div>`;
   $("#mobile-nav").innerHTML = navMarkup();
   if (desktopMoreOpen) $("#sidebar .nav-more").open = true;
   if (mobileMoreOpen) $("#mobile-nav .nav-more").open = true;
@@ -259,48 +298,73 @@ function sessionStoreKey() {
   const user = getIdentity()?.user || {};
   return `${CHAT_SESSIONS_KEY}:${user.user_id || user.id || user.username || "local"}`;
 }
+function privateExtensionText(value) {
+  return /mcpServers|npm_config_registry/i.test(String(value || ''));
+}
 function loadChatSessions() {
   try {
     const sessions = JSON.parse(localStorage.getItem(sessionStoreKey()) || "[]");
-    return Array.isArray(sessions) ? sessions.filter((item) => item?.id && Array.isArray(item.messages)).slice(0, 24) : [];
+    if (!Array.isArray(sessions)) return [];
+    const clean = sessions.filter((item) => item?.id && Array.isArray(item.messages)).slice(0, 100).map((item) => ({
+      ...item,
+      title: privateExtensionText(item.title) ? '添加 MCP 连接' : item.title,
+      messages: item.messages.map((message) => privateExtensionText(message.content) || privateExtensionText(message.question)
+        ? { ...message, content: '添加 MCP 连接', question: null, management: true }
+        : message),
+    }));
+    try { localStorage.setItem(sessionStoreKey(), JSON.stringify(clean)); } catch (_error) { /* In-memory sanitized copy remains usable. */ }
+    return clean;
   } catch (_error) {
     return [];
   }
 }
-function seedResearchHistory() {
-  if (state.chatSessions.length || !state.history.length) return;
-  try { if (localStorage.getItem(sessionStoreKey()) !== null) return; } catch (_error) { return; }
-  state.chatSessions = state.history.map((run) => ({
+function rebuildChatSessions() {
+  const server = state.serverChatSessions.map((session) => ({ ...session, source: 'server' }));
+  const serverIds = new Set(server.map((session) => session.id));
+  const browser = state.legacyChatSessions
+    .filter((session) => !serverIds.has(session.id))
+    .map((session) => ({ ...session, id: `legacy-${session.id}`, source: 'browser' }));
+  const recordedRuns = new Set([
+    ...server.flatMap((session) => session.run_ids || []),
+    ...browser.flatMap((session) => [
+      ...(session.id.startsWith('legacy-history-') ? [session.id.slice('legacy-history-'.length)] : []),
+      ...(session.messages || []).map((message) => message.run_id).filter(Boolean),
+    ]),
+  ]);
+  const research = state.history.filter((run) => run.legacy && !recordedRuns.has(run.run_id)).map((run) => ({
     id: `history-${run.run_id}`,
-    title: (run.question || "历史投研").replace(/\s+/g, " ").slice(0, 42),
+    source: 'research',
+    title: (privateExtensionText(run.question) ? '添加 MCP 连接' : run.question || '历史投研').replace(/\s+/g, ' ').slice(0, 42),
+    created_at: run.created_at,
     updated_at: run.completed_at || run.created_at,
     messages: [
-      { role: "user", content: run.question || "", created_at: run.created_at },
-      { role: "assistant", content: run.answer || run.error || "研究记录暂无回答内容", model: run.model, evidence: run.evidence || [], cards: run.cards || [], tool_calls: run.tool_calls, error: run.error, created_at: run.completed_at || run.created_at },
+      { role: 'user', content: privateExtensionText(run.question) ? '添加 MCP 连接' : run.question || '', management: privateExtensionText(run.question), created_at: run.created_at },
+      { role: 'assistant', content: run.answer || run.error || '研究记录暂无回答内容', model: run.model, evidence: run.evidence || [], cards: run.cards || [], tool_calls: run.tool_calls, error: run.error, created_at: run.completed_at || run.created_at },
     ],
   }));
-  try { localStorage.setItem(sessionStoreKey(), JSON.stringify(state.chatSessions)); } catch (_error) { /* Keep the server history visible for this visit. */ }
-  renderSidebar();
+  state.chatSessions = [...server, ...browser, ...research]
+    .sort((a, b) => Date.parse(b.updated_at || b.created_at) - Date.parse(a.updated_at || a.created_at));
 }
 function persistChatSession() {
-  if (!state.activeChatId || !state.messages.length) return;
+  if (!state.activeChatId || !state.messages.length || /^(?:legacy-|history-)/.test(state.activeChatId)) return;
   const firstQuestion = state.messages.find((message) => message.role === "user")?.content || "新的 AI 投研会话";
   const now = new Date().toISOString();
   const existing = state.chatSessions.find((item) => item.id === state.activeChatId);
   const session = {
     id: state.activeChatId,
-    title: existing?.title || firstQuestion.replace(/\s+/g, " ").slice(0, 42),
+    source: 'server',
+    title: existing?.title && existing.title !== '图片待提问' ? existing.title : firstQuestion.replace(/\s+/g, " ").slice(0, 42),
     updated_at: now,
-    messages: state.messages.filter((message) => !message.pending).slice(-40),
+    messages: state.messages.filter((message) => !message.pending).slice(-40).map(({ imagePreview, ...message }) => message),
   };
-  state.chatSessions = [session, ...state.chatSessions.filter((item) => item.id !== session.id)].slice(0, 24);
-  try { localStorage.setItem(sessionStoreKey(), JSON.stringify(state.chatSessions)); } catch (_error) { notify("浏览器存储空间不足，会话未能保存"); }
+  state.serverChatSessions = [session, ...state.serverChatSessions.filter((item) => item.id !== session.id)].slice(0, 100);
+  rebuildChatSessions();
   renderSidebar();
   const title = $("#active-session-title");
   if (title) title.textContent = session.title;
 }
 function saveRailPrefs() {
-  try { localStorage.setItem(RAIL_KEY, JSON.stringify({ cards: state.railCards, wide: state.railWide, width: state.railWidth })); } catch (_error) { /* Use current layout for this visit. */ }
+  try { localStorage.setItem(RAIL_KEY, JSON.stringify({ cards: state.railCards, wide: state.railWide, visible: state.railVisible, width: state.railWidth })); } catch (_error) { /* Use current layout for this visit. */ }
 }
 function focusRailCard(id, expanded = true) {
   const featureId = id === "market_clock" ? "clock" : id;
@@ -330,7 +394,6 @@ function utilityCardBody(id) {
     const gaps = state.providers.filter((item) => ["error", "partial", "stale"].includes(item.state)).length;
     return `<div class="utility-stat-row"><strong>${available}</strong><span>个市场有缓存</span><strong class="${gaps ? "market-down" : "market-up"}">${gaps}</strong><span>个数据缺口</span></div><div class="utility-provider-list">${state.providers.slice(0, 4).map((item) => `<div><span>${esc(item.market_name)}</span><small>${number(item.quote_count, 0)} 条 · ${esc(item.state === "connected" ? "可用" : item.state === "partial" ? "部分可用" : item.state === "stale" ? "缓存过期" : item.state === "error" ? "连接异常" : "等待")}</small></div>`).join("")}</div><a class="utility-card-foot" href="#/${id === "data" ? "settings" : "markets"}">${id === "data" ? "查看连接与数据源 →" : "打开市场总览 →"}</a>`;
   }
-  if (id === "trading") return `<div class="utility-stat-row"><strong>${state.accounts.length}</strong><span>个模拟账户</span><span class="tag amber">模拟盘</span></div><p class="utility-description">账户、持仓和订单记录集中在模拟交易工作台。</p><a class="utility-card-foot" href="#/trading">打开模拟交易 →</a>`;
   if (id === "security") return `<div class="utility-user-preview"><span class="avatar-local">${esc((getIdentity()?.user?.username || "我").slice(0, 1))}</span><span><strong>${esc(getIdentity()?.user?.username || getIdentity()?.username || "私人空间")}</strong><small>${identitySecurityLabel()}</small></span></div><a class="utility-card-foot" href="#/security">查看账户安全 →</a>`;
   const countInfo = {
     indices: `${state.providers.filter((item) => item.quote_count > 0).length} 个市场数据源可用`,
@@ -345,11 +408,11 @@ function utilityCardBody(id) {
 }
 function utilityRailMarkup() {
   const visibleCards = state.expandedRailCard ? state.railCards.filter((id) => id === state.expandedRailCard) : state.railCards;
-  const noticeLabel = features.find((item) => item[0] === state.railNotice)?.[2] || (state.railNotice === "watchlist" ? "我的自选" : "模拟交易");
+  const noticeLabel = features.find((item) => item[0] === state.railNotice)?.[2] || "我的自选";
   const noticeMarkup = state.railNotice
     ? `<div class="rail-notice">${icon("spark")}已更新「${esc(noticeLabel)}」卡片</div>`
     : "";
-  return `<div class="utility-rail-head"><div><span class="eyebrow">AI WORKSPACE</span><h2>工作台卡片</h2><p>拖动排序 · 卡片内容可展开</p></div><button class="icon-button" data-action="manage-rail" aria-label="管理工作台卡片" title="管理卡片">${icon("settings")}</button></div><div class="utility-rail-tools"><button class="button small ghost" data-action="manage-rail">${icon("plus")} 添加 / 管理</button><button class="icon-button" data-action="toggle-rail-width" aria-label="${state.railWide ? "收窄卡片栏" : "加宽卡片栏"}" title="${state.railWide ? "收窄" : "加宽至半屏"}">${icon("arrow")}</button></div>${noticeMarkup}<div class="utility-card-list ${state.expandedRailCard ? "has-expanded" : ""}" id="utility-card-list">${visibleCards.map((id) => {
+  return `<div class="utility-rail-head"><div><span class="eyebrow">AI WORKSPACE</span><h2>工作台卡片</h2><p>拖动排序 · 卡片内容可展开</p></div><div class="utility-rail-head-actions"><button class="icon-button" data-action="manage-rail" aria-label="管理工作台卡片" title="管理卡片">${icon("settings")}</button><button class="icon-button" data-action="hide-rail" aria-label="隐藏工作台卡片栏" title="隐藏卡片栏">${icon("close")}</button></div></div><div class="utility-rail-tools"><button class="button small ghost" data-action="manage-rail">${icon("plus")} 添加 / 管理</button><button class="icon-button" data-action="toggle-rail-width" aria-label="${state.railWide ? "收窄卡片栏" : "加宽卡片栏"}" title="${state.railWide ? "收窄" : "加宽至半屏"}">${icon("arrow")}</button></div>${noticeMarkup}<div class="utility-card-list ${state.expandedRailCard ? "has-expanded" : ""}" id="utility-card-list">${visibleCards.map((id) => {
     const feature = features.find((item) => item[0] === id);
     const cardTitle = id === "clock" ? "市场时钟" : id === "data" ? "数据连接" : feature?.[2] || id;
     const cardRoute = id === "clock" ? "#/markets" : id === "data" ? "#/settings" : feature?.[3] || "#/chat";
@@ -361,7 +424,15 @@ function renderUtilityRail() {
   const rail = $("#utility-rail");
   const workspace = $(".workspace");
   if (!rail || !workspace) return;
-  workspace.classList.toggle("rail-wide", state.railWide);
+  const inChat = route().name === "chat";
+  const showRail = inChat && state.railVisible;
+  workspace.classList.toggle("rail-hidden", !showRail);
+  workspace.classList.toggle("rail-wide", showRail && state.railWide);
+  rail.hidden = !showRail;
+  const toggle = $(".utility-toggle");
+  toggle.hidden = !inChat;
+  toggle.setAttribute("aria-label", showRail ? "打开工作台卡片窗口" : "显示工作台卡片栏");
+  toggle.setAttribute("aria-expanded", String(showRail));
   workspace.style.setProperty("--utility-width", state.railWide ? "50vw" : `${state.railWidth}px`);
   rail.innerHTML = `<button class="utility-resizer" data-action="resize-rail" aria-label="拖动调整右栏宽度" title="拖动调整宽度"></button>${utilityRailMarkup()}`;
   const dialogContent = $("#utility-dialog-content");
@@ -379,7 +450,8 @@ async function refreshShell() {
     ["sessions", "/markets/status"],
     ["providers", "/providers"],
     ["status", "/ai/status"],
-    ["history", "/ai/research?limit=12"],
+    ["history", "/ai/research?limit=100"],
+    ["serverChatSessions", "/ai/sessions?limit=100"],
     ["accounts", "/accounts"],
   ];
   const results = await Promise.allSettled(
@@ -390,20 +462,90 @@ async function refreshShell() {
     }),
   );
   if (getIdentity() !== requestedIdentity) return results;
-  seedResearchHistory();
+  rebuildChatSessions();
   renderSidebar();
   renderUtilityRail();
   const utilityDialog = $("#utility-dialog-content");
   if (utilityDialog && $("#utility-dialog").open) utilityDialog.innerHTML = utilityRailMarkup();
   const note = $("#model-note");
   if (note) note.innerHTML = modelNote();
+  if (!state.status?.supports_vision) state.pastedImage = null;
+  const imagePreview = $("#chat-image-preview");
+  if (imagePreview) imagePreview.innerHTML = pastedImageMarkup();
+  const visionHint = $("#chat-vision-hint");
+  if (visionHint) visionHint.textContent = state.accountId ? "本次允许读取指定账户" : state.status?.supports_vision ? "粘贴图片 · Enter 发送" : "Enter 发送 · Shift + Enter 换行";
   if (state.route?.name === "calendar") renderRoute();
   return results;
 }
 function modelNote() {
+  if (state.memoryStatus === "degraded")
+    return `<span><span class="status-dot warn"></span>投资记忆暂时不可用；本轮只依据当前数据分析</span>`;
   if (state.status?.enabled)
     return `<span><span class="status-dot ready"></span> ${esc(state.status.primary_model)}</span><span>只读数据工具已就绪</span>`;
   return `<span>配置模型后，Finch 可以调取数据并整理研究结论。</span><a class="text-link" href="#/settings">配置模型 ↗</a>`;
+}
+function pastedImageMarkup() {
+  if (!state.pastedImage) return "";
+  if (!state.status?.supports_vision) return "";
+  const image = state.pastedImage;
+  const ready = !!image.uploaded?.content;
+  const failed = !!image.error || !!image.uploaded?.analysis_error;
+  const status = ready ? `${icon('check')}已识别，图片信息已加入当前会话` : failed ? `${icon('close')}识别失败，发送时重试` : '<span class="spinner" aria-hidden="true"></span>正在识别图片…';
+  return `<div class="chat-image-chip"><img src="${esc(image.dataUrl)}" alt="待识别的剪贴板图片" /><div class="chat-image-info"><span>${esc(image.filename)} · ${Math.ceil(image.size / 1024)} KB${image.uploaded?.sha256 ? ` · SHA-256 ${esc(image.uploaded.sha256.slice(0, 12))}…` : ''}</span><span class="chat-image-status ${ready ? 'is-ready' : failed ? 'is-error' : 'is-loading'}">${status}</span></div><button type="button" data-action="remove-chat-image" aria-label="移除粘贴的图片">${icon("close")}</button></div>`;
+}
+function rejectPastedImage() {
+  state.pastedImage = null;
+  const preview = $("#chat-image-preview");
+  if (preview) preview.innerHTML = "";
+  state.messages.push({ role: "assistant", content: "当前模型不支持图片识别。请在模型配置中选择支持视觉的模型后重试。", management: true, created_at: new Date().toISOString() });
+  updateMessages();
+}
+function handleChatImagePaste(event) {
+  const item = [...(event.clipboardData?.items || [])].find((entry) => entry.kind === "file" && entry.type.startsWith("image/"));
+  if (!item) return;
+  event.preventDefault();
+  if (!state.status?.supports_vision) return rejectPastedImage();
+  const file = item.getAsFile();
+  if (!file || !["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.type) || file.size > 5 * 1024 * 1024) {
+    notify("请复制不超过 5 MB 的 PNG、JPEG、GIF 或 WebP 图片");
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    if (typeof reader.result !== "string" || !reader.result.startsWith("data:image/")) return;
+    const pasted = { dataUrl: reader.result, filename: file.name || `clipboard-${Date.now()}.png`, size: file.size };
+    state.pastedImage = pasted;
+    const preview = $("#chat-image-preview");
+    if (preview) preview.innerHTML = pastedImageMarkup();
+    const session_id = state.activeChatId && !/^(?:history-|legacy-)/.test(state.activeChatId) ? state.activeChatId : null;
+    pasted.uploadPromise = request('/ai/images', {
+      method: 'POST', body: { image_data_url: pasted.dataUrl, filename: pasted.filename, session_id }, timeout: 65000,
+    }).then((uploaded) => {
+      pasted.uploaded = uploaded;
+      if (state.pastedImage === pasted) {
+        state.activeChatId = uploaded.session_id;
+        state.sessionImage = uploaded;
+        if (!state.serverChatSessions.some((session) => session.id === uploaded.session_id)) {
+          state.serverChatSessions.unshift({ id: uploaded.session_id, source: 'server', title: '图片待提问', created_at: uploaded.created_at, updated_at: uploaded.created_at, messages: [] });
+          rebuildChatSessions();
+          renderSidebar();
+        }
+        const target = $('#chat-image-preview');
+        if (target) target.innerHTML = pastedImageMarkup();
+      }
+      return uploaded;
+    }).catch((error) => {
+      pasted.error = error.message;
+      if (state.pastedImage === pasted) {
+        const target = $('#chat-image-preview');
+        if (target) target.innerHTML = pastedImageMarkup();
+        notify(`图片预解析失败：${error.message}。发送时会重试。`);
+      }
+      return null;
+    });
+  };
+  reader.onerror = () => notify("读取剪贴板图片失败，请重新复制后粘贴");
+  reader.readAsDataURL(file);
 }
 function heading(title, description, actions = "", eyebrow = "") {
   return `<div class="page-heading"><div>${eyebrow ? `<div class="eyebrow">${esc(eyebrow)}</div>` : ""}<h1 id="page-title">${esc(title)}</h1>${description ? `<p>${esc(description)}</p>` : ""}</div>${actions ? `<div class="actions">${actions}</div>` : ""}</div>`;
@@ -451,11 +593,18 @@ function restoreForm() {
   }
 }
 function welcome() {
-  return `<div class="chat-welcome"><div class="welcome-symbol">${icon("spark")}</div><h1>今天，想研究什么？<span>从一个问题，到一份有据可查的判断。</span></h1><p>和 Finch 一起看个股、拆解板块，或读一份财报。需要深入时，直接从回答进入对应的数据页面。</p><div class="prompt-grid"><button class="prompt-card" data-action="prompt" data-question="请结合最新新闻、央行流动性和大盘指数，分析行业今日/5日/10日轮动，找出相对改善和转弱板块，说明数据缺口。">${icon("chart")}<strong>研究板块轮动</strong><small>新闻、流动性与行业相对强弱</small></button><button class="prompt-card" data-action="prompt" data-question="读取最新财经快讯和央行逆回购公告，分析潜在行业影响，区分已确认事实、推断与到期/净投放缺口。">${icon("grid")}<strong>追踪新闻与政策</strong><small>公开市场操作、事件与行业影响</small></button><button class="prompt-card" data-action="prompt" data-question="请分析 CN:600519 的价格、财务和风险，再说明所属行业与大盘环境，引用来源。">${icon("layers")}<strong>深入候选个股</strong><small>行业环境、财务与风险</small></button></div><div class="chat-intro-line">${icon("link")}每条数据卡片都能继续打开，查看详细指标与来源。</div></div>`;
+  return `<div class="chat-welcome"><div class="welcome-symbol">${icon("spark")}</div><h1>今天，想研究什么？<span>从一个问题，到一份有据可查的判断。</span></h1><p>和 Finch 一起看个股、拆解板块，或读一份财报。需要深入时，直接从回答进入对应的数据页面。</p><div class="prompt-grid"><button class="prompt-card" data-action="prompt" data-question="请把我粘贴的截图中的持仓导入我的持仓，先生成识别草稿供我核对。">${icon("file")}<strong>截图导入持仓</strong><small>粘贴截图，识别后发送；保存前可核对</small></button><button class="prompt-card" data-action="prompt" data-question="请结合最新新闻、央行流动性和大盘指数，分析行业今日/5日/10日轮动，找出相对改善和转弱板块，说明数据缺口。">${icon("chart")}<strong>研究板块轮动</strong><small>新闻、流动性与行业相对强弱</small></button><button class="prompt-card" data-action="prompt" data-question="读取最新财经快讯和央行逆回购公告，分析潜在行业影响，区分已确认事实、推断与到期/净投放缺口。">${icon("grid")}<strong>追踪新闻与政策</strong><small>公开市场操作、事件与行业影响</small></button><button class="prompt-card" data-action="prompt" data-question="请分析 CN:600519 的价格、财务和风险，再说明所属行业与大盘环境，引用来源。">${icon("layers")}<strong>深入候选个股</strong><small>行业环境、财务与风险</small></button></div><div class="chat-intro-line">${icon("link")}每条数据卡片都能继续打开，查看详细指标与来源。</div></div>`;
+}
+function userImageMarkup(message) {
+  const source = message.imageId
+    ? `/api/v1/ai/images/${encodeURIComponent(message.imageId)}/content`
+    : message.imagePreview;
+  if (!source) return message.imageAttached ? '<span class="chat-image-label">已粘贴图片</span>' : '';
+  return `<figure class="chat-image-figure"><img class="chat-message-image" src="${esc(source)}" alt="${esc(message.imageName || '对话图片')}" /><figcaption>${esc(message.imageName || '已解析图片')}${message.imageSize ? ` · ${Math.ceil(message.imageSize / 1024)} KB` : ''}${message.imageHash ? ` · SHA-256 ${esc(message.imageHash.slice(0, 12))}…` : ''}</figcaption></figure>`;
 }
 function messageMarkup(m, i) {
   const isUser = m.role === "user";
-  return `<article class="message ${isUser ? "user" : "assistant"}" data-message="${i}"><header class="message-meta"><span class="message-avatar ${isUser ? "" : "agent"}">${isUser ? "我" : icon("spark")}</span><strong>${isUser ? "你" : "Finch"}</strong>${m.model ? `<span class="muted">${esc(m.model)}</span>` : ""}<time>${time(m.created_at)}</time></header><div class="message-content">${m.pending ? '<div class="pending-line" role="status"><span class="spinner"></span>正在调取数据，整理研究证据…</div>' : m.error ? `<div class="alert error" role="alert">${esc(m.error)}<br><button class="button small ghost" data-action="retry-chat" data-index="${i}">重新发送</button> <a class="text-link" href="#/settings">查看模型与数据状态</a></div>` : isUser ? esc(m.content) : `${m.cards?.length ? `<section class="answer-components" aria-label="行情与工具数据"><div class="answer-components-title">行情与工具数据 <span>来自本次回答调用的数据</span></div><div class="result-cards">${resultCards(m.cards)}</div></section>` : ""}${markdown(m.content)}`}</div>${!isUser && !m.pending && !m.error ? `<footer class="message-actions"><button data-action="copy-message" data-index="${i}">${icon("copy")}复制</button><button data-action="all-evidence" data-index="${i}">${icon("link")}${m.evidence?.length || 0} 条数据证据</button>${m.calendarDraft ? `<button class="calendar-ai-save" data-action="calendar-add-ai" data-index="${i}" data-date="${esc(m.calendarDraft.date)}" data-category="${esc(m.calendarDraft.category)}">加入 ${esc(m.calendarDraft.date)} 日历</button>` : ""}<span>${m.tool_calls || 0} 次工具调用</span></footer>` : ""}</article>`;
+  return `<article class="message ${isUser ? "user" : "assistant"}" data-message="${i}"><header class="message-meta"><span class="message-avatar ${isUser ? "" : "agent"}">${isUser ? "我" : icon("spark")}</span><strong>${isUser ? "你" : "Finch"}</strong>${m.model ? `<span class="muted">${esc(m.model)}</span>` : ""}<time>${time(m.created_at)}</time></header><div class="message-content">${m.pending ? '<div class="pending-line" role="status"><span class="spinner"></span>正在调取数据，整理研究证据…</div>' : m.error ? `<div class="alert error" role="alert">${esc(m.error)}<br>${m.question ? `<button class="button small ghost" data-action="retry-chat" data-index="${i}">重新发送</button>` : ''} <a class="text-link" href="#/settings">查看模型与数据状态</a></div>` : isUser ? `${userImageMarkup(m)}${esc(m.content)}` : `${m.cards?.length ? `<section class="answer-components" aria-label="行情与工具数据"><div class="answer-components-title">行情与工具数据 <span>来自本次回答调用的数据</span></div><div class="result-cards">${resultCards(m.cards)}</div></section>` : ""}${markdown(m.content)}`}</div>${!isUser && !m.pending && !m.error ? `<footer class="message-actions"><button data-action="copy-message" data-index="${i}">${icon("copy")}复制</button><button data-action="all-evidence" data-index="${i}">${icon("link")}${m.evidence?.length || 0} 条数据证据</button>${m.calendarDraft ? `<button class="calendar-ai-save" data-action="calendar-add-ai" data-index="${i}" data-date="${esc(m.calendarDraft.date)}" data-category="${esc(m.calendarDraft.category)}">加入 ${esc(m.calendarDraft.date)} 日历</button>` : ""}<span>${m.tool_calls || 0} 次工具调用</span></footer>` : ""}</article>`;
 }
 function updateMessages(follow = true) {
   const el = $("#messages-inner");
@@ -472,7 +621,7 @@ function updateMessages(follow = true) {
 }
 function renderChat() {
   setPage(
-    `<div class="chat-layout"><section class="conversation" aria-label="AI 投研对话"><header class="chat-heading"><span><span class="agent-spark">${icon("spark")}</span><strong id="page-title">AI 投研</strong> <span class="muted">/ <span id="active-session-title">${esc(state.chatSessions.find((item) => item.id === state.activeChatId)?.title || "当前会话")}</span></span></span><button class="button small" data-action="ask" data-question="请综合今天的新闻、流动性、大盘、行业轮动和我的自选，给出今日操作建议：逐只明确买入、加仓、持有、减仓、卖出或观望；注明数据时点、触发条件、失效条件和缺口。先查询实际数据，缺数据时建议暂不操作。">今日操作建议</button><button class="icon-button" data-action="new-chat" aria-label="新建 AI 投研会话" ${state.sending ? "disabled" : ""}>${icon("plus")}</button></header><div class="messages" id="messages" aria-label="对话记录"><div class="messages-inner" id="messages-inner"></div></div><div class="composer-wrap"><div class="model-note" id="model-note">${modelNote()}</div><form id="chat-form" class="composer" novalidate><label class="sr-only" for="chat-input">向 Finch 提问</label><textarea id="chat-input" class="resize-none" name="question" rows="2" placeholder="问一只股票、一个板块，或交给 Finch 一份材料…" maxlength="4000">${esc(state.draft)}</textarea><div class="composer-footer"><a class="icon-button" href="#/documents" aria-label="上传研报或财报">${icon("paperclip")}</a><button class="icon-button ${state.accountId ? "positive" : ""}" type="button" data-action="account-context" aria-label="选择本次对话的账户上下文">${icon("wallet")}</button><span class="hint">${state.accountId ? "本次允许读取指定账户" : "Enter 发送 · Shift + Enter 换行"}</span><button class="send-button" id="send-button" aria-label="发送研究问题" ${state.sending ? "disabled" : ""}>${state.sending ? '<span class="spinner"></span>' : icon("up")}</button></div></form><p class="composer-caption">提问和命中的资料会发送给你配置的模型 · Agent 给出有依据的操作建议；模拟下单需单独授权</p></div></section></div>`,
+    `<div class="chat-layout"><section class="conversation" aria-label="AI 投研对话"><header class="chat-heading"><span><span class="agent-spark">${icon("spark")}</span><strong id="page-title">AI 投研</strong> <span class="muted">/ <span id="active-session-title">${esc(state.chatSessions.find((item) => item.id === state.activeChatId)?.title || "当前会话")}</span></span></span><a class="button small ghost chat-memory-link" href="#/memory">${icon("file")} 投资记忆</a><button class="button small" data-action="ask" data-question="请综合今天的新闻、流动性、大盘、行业轮动和我的自选，给出今日操作建议：逐只明确买入、加仓、持有、减仓、卖出或观望；注明数据时点、触发条件、失效条件和缺口。先查询实际数据，缺数据时建议暂不操作。">今日操作建议</button><button class="icon-button" data-action="new-chat" aria-label="新建 AI 投研会话" ${state.sending ? "disabled" : ""}>${icon("plus")}</button></header><div class="messages" id="messages" aria-label="对话记录"><div class="messages-inner" id="messages-inner"></div></div><div class="composer-wrap"><div class="model-note" id="model-note">${modelNote()}</div><form id="chat-form" class="composer" novalidate><label class="sr-only" for="chat-input">向 Finch 提问</label><div id="chat-image-preview" class="chat-image-preview" aria-live="polite">${pastedImageMarkup()}</div><textarea id="chat-input" class="resize-none" name="question" rows="2" placeholder="问一只股票、一个板块，或交给 Finch 一份材料…" maxlength="4000">${esc(state.draft)}</textarea><div class="composer-footer"><a class="icon-button" href="#/documents" aria-label="上传研报或财报">${icon("paperclip")}</a><button class="icon-button" type="button" data-action="skill-zip-chat" aria-label="安装 Skill ZIP" title="安装 Skill ZIP">${icon("plus")}</button><input class="sr-only" id="chat-skill-zip" type="file" accept=".zip,application/zip" aria-label="选择 Skill ZIP" /><button class="icon-button ${state.accountId ? "positive" : ""}" type="button" data-action="account-context" aria-label="选择本次对话的账户上下文">${icon("wallet")}</button><span class="hint" id="chat-vision-hint">${state.accountId ? "本次允许读取指定账户" : state.status?.supports_vision ? "粘贴图片 · Enter 发送" : "Enter 发送 · Shift + Enter 换行"}</span><button class="send-button" id="send-button" aria-label="发送研究问题" ${state.sending ? "disabled" : ""}>${state.sending ? '<span class="spinner"></span>' : icon("up")}</button></div></form></div></section></div>`,
   );
   updateMessages(false);
   $("#chat-input").addEventListener("input", (e) => {
@@ -480,6 +629,7 @@ function renderChat() {
     e.target.style.height = "auto";
     e.target.style.height = Math.min(150, e.target.scrollHeight) + "px";
   });
+  $("#chat-input").addEventListener("paste", handleChatImagePaste);
   $("#chat-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
@@ -489,30 +639,48 @@ function renderChat() {
   const messages = $("#messages");
   messages.scrollTop = state.messages.length ? messages.scrollHeight : 0;
 }
-async function sendChat(question = state.draft) {
+async function sendChat(question = state.draft, reuseImageId = null) {
   question = question.trim();
+  const pastedImage = state.pastedImage;
+  if (!question && pastedImage) question = "请识别并描述这张图片。";
   if (!question || state.sending) return;
-  if (!state.activeChatId) state.activeChatId = crypto.randomUUID();
+  if (pastedImage && !state.status?.supports_vision) {
+    rejectPastedImage();
+    return;
+  }
+  const management = /mcpServers|npm_config_registry/i.test(question) || (/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/.test(question) && /安装|添加|install/i.test(question));
+  const importHoldings = isHoldingsImportIntent(question);
+  const displayQuestion = management ? (/mcpServers/.test(question) ? '添加 MCP 连接' : '安装 Skill') : question;
   const history = state.messages
-    .filter((m) => !m.error && !m.pending)
+    .filter((m) => !m.error && !m.pending && !m.management)
     .slice(-10)
     .map((m) => ({ role: m.role, content: m.content }));
-  state.messages.push({
+  const userMessage = {
     role: "user",
-    content: question,
+    content: displayQuestion,
+    imageAttached: !!pastedImage || !!reuseImageId,
+    imageId: reuseImageId,
+    imagePreview: pastedImage?.dataUrl || null,
+    message_id: crypto.randomUUID(),
+    management,
     created_at: new Date().toISOString(),
-  });
+  };
+  state.messages.push(userMessage);
   const pending = {
     role: "assistant",
     pending: true,
     created_at: new Date().toISOString(),
-    question,
-    calendarDraft: state.calendarDraft,
+    question: management ? null : question,
+    management,
+    calendarDraft: management ? null : state.calendarDraft,
   };
   state.calendarDraft = null;
   state.messages.push(pending);
   state.sending = true;
   state.draft = "";
+  state.pastedImage = null;
+  const imagePreview = $("#chat-image-preview");
+  if (imagePreview) imagePreview.innerHTML = "";
   const input = $("#chat-input");
   if (input) {
     input.value = "";
@@ -526,18 +694,59 @@ async function sendChat(question = state.draft) {
     btn.innerHTML = '<span class="spinner"></span>';
   }
   try {
+    const uploaded = pastedImage ? await pastedImage.uploadPromise : reuseImageId ? { image_id: reuseImageId, session_id: state.activeChatId } : null;
+    if (uploaded) {
+      state.activeChatId = uploaded.session_id;
+      state.sessionImage = uploaded;
+      userMessage.imageId = uploaded.image_id;
+      userMessage.imageName = uploaded.filename || pastedImage?.filename;
+      userMessage.imageSize = uploaded.byte_size || pastedImage?.size;
+      userMessage.imageHash = uploaded.sha256;
+    }
+    if (importHoldings) {
+      const currency = /港股|港币|HKD/i.test(question) ? 'HKD' : /美股|美元|USD/i.test(question) ? 'USD' : 'CNY';
+      const prior = !pastedImage && state.activeChatId && !/^(?:history-|legacy-)/.test(state.activeChatId)
+        ? await request('/ai/images/latest?session_id=' + encodeURIComponent(state.activeChatId)) : null;
+      const imageId = uploaded?.image_id || prior?.image_id;
+      if (!imageId && !pastedImage) throw new Error('当前会话没有可导入的图片，请先粘贴持仓截图。');
+      const draft = await previewChatHoldingsScreenshot(imageId ? { image_id: imageId } : { image_data_url: pastedImage.dataUrl }, currency);
+      userMessage.imageId = imageId || null;
+      Object.assign(pending, {
+        pending: false,
+        management: true,
+        content: `已从截图识别出 ${draft.count} 条 ${draft.currency} 持仓${draft.warnings ? `，另有 ${draft.warnings} 处需要手动检查` : ''}。请在[我的持仓核对识别草稿](#/holdings?currency=${draft.currency}&import=1)，确认数量、成本和收益率后填入表单并保存。截图本身不会自动写入账本。`,
+        tool_calls: 0,
+      });
+      return;
+    }
+    if (!management && (!state.activeChatId || /^(?:history-|legacy-)/.test(state.activeChatId))) {
+      const created = await request("/ai/sessions", { method: "POST", body: { title: displayQuestion.slice(0, 120) } });
+      state.activeChatId = created.id;
+      state.serverChatSessions = [created, ...state.serverChatSessions];
+      rebuildChatSessions();
+      renderSidebar();
+    }
     const body = {
       question,
       history,
       max_tool_calls: 16,
       include_account: !!state.accountId,
     };
+    if (!management) {
+      body.session_id = state.activeChatId;
+      body.client_message_id = userMessage.message_id;
+    }
     if (state.accountId) body.account_id = state.accountId;
+    if (uploaded) body.image_id = uploaded.image_id;
+    else if (pastedImage) body.image_data_url = pastedImage.dataUrl;
     const result = await request("/ai/research", {
       method: "POST",
       body,
       timeout: 190000,
     });
+    if (result.display_question) userMessage.content = result.display_question;
+    if (result.session_id) state.activeChatId = result.session_id;
+    state.memoryStatus = result.memory_status || "ready";
     Object.assign(pending, {
       pending: false,
       content: result.answer,
@@ -549,16 +758,41 @@ async function sendChat(question = state.draft) {
     });
     refreshShell();
   } catch (error) {
-    Object.assign(pending, { pending: false, error: error.message, question });
+    Object.assign(pending, { pending: false, error: error.message, question: management ? null : question });
   } finally {
     state.sending = false;
-    persistChatSession();
+    if (!management) persistChatSession();
     updateMessages(false);
     const send = $("#send-button");
     if (send) {
       send.disabled = false;
       send.innerHTML = icon("up");
     }
+  }
+}
+async function installChatSkillZip(file) {
+  if (!file || state.sending) return;
+  if (!file.name.toLowerCase().endsWith('.zip') || file.size > 10 * 1024 * 1024) {
+    notify('请选择不超过 10 MB 的 Skill ZIP');
+    return;
+  }
+  if (!state.activeChatId) state.activeChatId = crypto.randomUUID();
+  state.messages.push({ role: 'user', content: `安装 Skill ZIP：${file.name}`, management: true, created_at: new Date().toISOString() });
+  const pending = { role: 'assistant', pending: true, management: true, created_at: new Date().toISOString() };
+  state.messages.push(pending);
+  state.sending = true;
+  updateMessages();
+  try {
+    const data = new FormData();
+    data.append('file', file);
+    const result = await request('/agent/extensions/skills/upload', { method: 'POST', body: data, timeout: 45000 });
+    Object.assign(pending, { pending: false, content: `已安装 **${result.name}**。\n\n元数据描述：${result.description}${result.requested_tools?.length ? `\n\n声明所需工具：${result.requested_tools.join('、')}。安装不会自动授予这些权限。` : ''}\n\n后续可以让我按此 Skill 的说明检查配置。`, tool_calls: 0 });
+  } catch (error) {
+    Object.assign(pending, { pending: false, error: error.message });
+  } finally {
+    state.sending = false;
+    persistChatSession();
+    updateMessages(false);
   }
 }
 function ask(question) {
@@ -577,7 +811,14 @@ function quoteTable(rows, { watchButtons = true, metrics = false } = {}) {
   return `<div class="table-scroll"><table class="data-table"><thead><tr><th>标的</th><th>价格 / 净值</th><th>涨跌幅</th>${metrics ? "<th>20 日均线</th><th>20 日年化波动</th>" : ""}<th>行情状态</th><th>数据时点</th>${watchButtons ? "<th>自选</th>" : ""}</tr></thead><tbody>${rows.map((q) => `<tr><td><a class="stock-link" href="${stockHref(q.instrument_id)}">${esc(q.name || q.instrument_id)}</a><small class="mono">${esc(q.instrument_id)}</small></td><td class="mono">${money(q.last, q.currency)}<small>${esc(q.price_unit || "")}</small></td><td class="mono ${tone(q.change_percent)}">${percent(q.change_percent)}</td>${metrics ? `<td class="mono">${number(q.metrics?.sma_20)}</td><td class="mono">${q.metrics?.annualized_volatility_20d == null ? "—" : number(q.metrics.annualized_volatility_20d * 100) + "%"}</td>` : ""}<td>${fresh(q)}${q.history_error ? "<small>日线采集异常</small>" : ""}</td><td class="mono">${time(q.exchange_time)}<small>接收 ${time(q.received_at)}</small></td>${watchButtons ? `<td><button class="icon-button" data-action="toggle-watch" data-id="${esc(q.instrument_id)}" aria-label="${state.watch.some((x) => x.instrument_id === q.instrument_id) ? "移除自选" : "加入自选"} ${esc(q.name || q.instrument_id)}">${icon(state.watch.some((x) => x.instrument_id === q.instrument_id) ? "check" : "plus")}</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
 }
 function sessionCards() {
-  return `<div class="session-grid">${state.sessions.map((m) => `<div class="session-card"><div class="name">${esc(markets[m.market])}</div><div class="state">${m.phase === "open" ? '<span class="status-dot"></span> ' : ""}${phases[m.phase] || esc(m.phase)}</div><small>${m.next_open ? "下次 " + time(m.next_open) : esc(m.timezone)}</small></div>`).join("")}</div>`;
+  const destinations = { CN: "#/markets?market=CN", HK: "#/markets?market=HK", US: "#/markets?market=US", FUND: "#/markets?market=FUND", GOLD: "#/gold" };
+  const currentMarket = state.route?.name === "gold" ? "GOLD" : state.route?.name === "markets" ? state.route.params.get("market") || "CN" : "";
+  const labels = { CN: "A股", HK: "港股", US: "美股", FUND: "基金", GOLD: "黄金" };
+  return `<nav class="session-grid" aria-label="市场状态与快捷入口">${state.sessions.map((m) => {
+    const active = currentMarket === m.market;
+    const phase = phases[m.phase] || m.phase;
+    return `<a class="session-card session-link ${active ? "active" : ""}" href="${destinations[m.market] || "#/markets"}" aria-label="${esc(markets[m.market])}，${esc(phase)}，查看行情" ${active ? 'aria-current="page"' : ""}><span class="session-name">${labels[m.market] || esc(markets[m.market])}</span><span class="session-state">${m.phase === "open" ? '<span class="status-dot"></span> ' : ""}${esc(phase)}</span><span class="session-arrow" aria-hidden="true">↗</span></a>`;
+  }).join("")}</nav>`;
 }
 async function renderMarkets(r, signal) {
   const market = r.params.get("market") || "CN",
@@ -738,7 +979,7 @@ async function renderStock(r, signal) {
         )
         .join(
           "",
-        )}<a class="route-tab" href="#/orders?instrument=${encodeURIComponent(id)}">模拟交易 ↗</a></nav><div class="section-gap">${content}</div>`,
+        )}</nav><div class="section-gap">${content}</div>`,
     ),
   );
   mountStock(d, r, signal);
@@ -876,18 +1117,34 @@ async function renderTrading(r, signal) {
 function futuStateText(futu) {
   return !futu?.enabled ? '未启用' : futu.connected ? '行情已连接' : futu?.opend_reachable ? 'OpenD 已登录 · 等待行情' : '等待 OpenD 登录';
 }
+function memoryRetentionMarkup(settings) {
+  if (settings.error) return panel('记忆保留期限', `<div class="panel-body"><p class="alert error" role="alert">设置加载失败：${esc(settings.error)}</p><button class="button small" data-action="refresh-memory-settings">重试</button></div>`);
+  return `<section class="panel memory-settings" id="memory-settings"><div class="panel-header"><div><h2>记忆保留期限</h2><p>为当前账户设置原始会话和归档记忆的保存时间。</p></div></div><div class="panel-body"><form id="memory-retention-form" class="memory-retention-form" novalidate><label class="field-label" for="session-retention">会话原文保留天数 <input class="field" id="session-retention" type="number" min="1" max="30" inputmode="numeric" value="${number(settings.session_days, 0)}" aria-describedby="session-retention-help memory-form-error"></label><small id="session-retention-help" class="field-help">1–30 天 · 当前最早可读日 ${esc(settings.earliest_session_day || '暂无')}</small><label class="field-label" for="archive-retention">归档记忆保留天数 <input class="field" id="archive-retention" type="number" min="1" max="365" inputmode="numeric" value="${number(settings.archive_days, 0)}" aria-describedby="archive-retention-help memory-form-error"></label><small id="archive-retention-help" class="field-help">1–365 天 · 当前最早日报 ${esc(settings.earliest_archive_day || '暂无')} · 短期记忆最多 30 天</small><p class="field-help memory-retention-warning">缩短期限后，超过新期限的内容会立即清理。归档日报和可编辑的 Markdown 文件请在 AI 投研聊天页打开「投资记忆」。</p><p id="memory-form-error" class="field-help" role="alert"></p><button type="button" class="button primary" data-action="save-memory-settings">保存保留期限</button></form>${state.legacyChatSessions.length ? `<p class="field-help">本机浏览器还有 ${state.legacyChatSessions.length} 个旧会话。只有你选择导入后，才会进入服务端记忆。</p><button class="button small" data-action="import-legacy-sessions">导入旧会话</button>` : ''}</div></section>`;
+}
 async function renderSettings(_route, signal = state.controller?.signal) {
   if (futuStatusTimer) clearInterval(futuStatusTimer);
+  if (state.route?.params?.get('section') === 'memory') {
+    const settings = await request('/ai/memory/settings', { signal }).catch((error) => ({ error: error.message }));
+    if (signal?.aborted) return;
+    setPage(page(heading('记忆保留期限', '此设置属于当前账户，在这里管理聊天原文与归档记忆的保留时间。', '<a class="button small" href="#/memory">打开投资记忆</a>') + memoryRetentionMarkup(settings)));
+    return;
+  }
   const s = state.status || {};
   const futu = await request('/providers/futu/status').catch(() => null);
+  const extensions = await request('/agent/extensions', { signal }).catch((error) => ({ skills: [], mcp: [], error: error.message }));
   if (signal?.aborted) return;
   const futuState = futuStateText(futu);
   setPage(
     page(
       heading("数据与模型", "查看 Agent 配置与市场数据源的实际连接状态。") +
-        `<div class="split">${panel("研究模型", `<div class="panel-body"><span class="tag ${s.enabled ? "ready" : "amber"}">${s.enabled ? "配置与运行时就绪" : s.configuration_state === "invalid" ? "配置无效" : "等待配置"}</span><h2 class="section-gap">${esc(s.primary_model || "连接你的 AI 模型")}</h2><p class="field-help section-gap">在项目根目录 .env 配置模型服务，然后重启本地服务。密钥只保留在服务端。</p><pre class="code-data section-gap">MODEL_CONFIG_JSON='[{"provider":"openai","model":"你的模型名","base_url":"https://你的服务/v1","api_key_env":"AI_MODEL_API_KEY"}]'\nPRIMARY_MODEL=你的模型名\nAI_MODEL_API_KEY=你的密钥</pre><p class="field-help section-gap">模型需支持工具调用。Agent 可查行情、指标、行业板块、财务摘要、基金披露、资料与回测。</p></div>`)}${panel("工作空间", `<div class="panel-body">${metric("运行方式", "本地单用户")}${metric("交易模式", "模拟盘 + AI 投研")}${metric("AI 订单权限", "单轮授权的模拟账户")}${metric("资料存储", "本机 MySQL")}<p class="field-help section-gap">公共数据源可能延迟或失效。你可以继续查看缓存数据，界面会保留来源和时间。</p></div>`)}</div><div class="section-gap">${panel("行情涨跌配色", `<div class="panel-body"><p class="field-help">只切换行情涨跌颜色；页面主色、提示和错误状态保持原样。选项保存在本机浏览器。</p><div class="palette-options section-gap" role="group" aria-label="行情涨跌配色"><button type="button" class="palette-option" data-action="set-market-palette" data-palette="cn" aria-pressed="${marketPalette === "cn"}"><span class="palette-example" aria-hidden="true"><i></i><i></i></span>A股视图 · 红涨绿跌</button><button type="button" class="palette-option" data-action="set-market-palette" data-palette="us" aria-pressed="${marketPalette === "us"}"><span class="palette-example" aria-hidden="true"><i></i><i></i></span>美股视图 · 绿涨红跌</button></div></div>`)}</div><div class="section-gap">${panel("富途行情 · 本机 OpenD", `<div class="panel-body"><span id="futu-state" class="tag ${futu?.connected ? "accent" : "amber"}">${esc(futuState)}</span><p id="futu-detail" class="field-help section-gap">${futu?.connected ? `最近收到 ${number(futu.last_quote_count, 0)} 条行情 · ${time(futu.last_success)}` : esc(futu?.last_error || '尚未收到富途行情')}</p><p class="field-help section-gap">启动项目时会自动拉起富途 OpenD。点击下方按钮可切换到富途官方登录窗口；完成登录后返回本页查看行情状态。</p><p id="futu-port" class="field-help section-gap">本机 API 端口 127.0.0.1:${number(futu?.opend_port || 11111, 0)} · ${futu?.opend_reachable ? "已监听" : "未监听"}</p><p class="field-help">网页不接收富途密码、验证码或交易密码；当前仅连接行情接口，模拟单仍写入本地模拟账户。</p>${futu?.market_errors && Object.keys(futu.market_errors).length ? `<p class="field-help section-gap">市场状态：${Object.entries(futu.market_errors).map(([m,e]) => esc(m + ' ' + e)).join('；')}</p>` : ''}<div class="actions section-gap"><button class="button small primary" data-action="open-futu-login" ${futu?.enabled ? "" : "disabled"}>打开富途 OpenD 登录窗口</button><button class="button small" data-action="refresh-futu-status">刷新连接状态</button><a class="text-link" href="https://openapi.futunn.com/futu-api-doc/quick/opend-base.html" target="_blank" rel="noopener noreferrer">官方安装说明 ↗</a></div></div>`)}</div><div class="section-gap">${panel("市场数据源", `<div class="panel-body provider-list">${state.providers.map((p) => `<article class="provider-item"><div><strong>${esc(p.market_name)}</strong><span class="tag ${p.state === "connected" ? "accent" : "amber"}">${esc({ connected: "已拉取", partial: "部分可用", stale: "缓存过期", error: "连接异常", refreshing: "请求中", waiting: "等待" }[p.state] || p.state)}</span></div><p>${esc(p.provider)} · ${esc(p.endpoint)} · ${number(p.quote_count, 0)} 条记录</p><p>最近接收 ${time(p.last_success)}</p>${p.last_error ? `<details class="section-gap"><summary>查看错误详情</summary><p>${esc(p.last_error)}</p></details>` : ""}<button class="button small section-gap" data-action="refresh-market" data-market="${esc(p.market)}">重新请求</button></article>`).join("")}</div>`)}</div>`,
+        `<div class="split">${panel("研究模型", `<div class="panel-body"><span class="tag ${s.enabled ? "ready" : "amber"}">${s.enabled ? "配置与运行时就绪" : s.configuration_state === "invalid" ? "配置无效" : "等待配置"}</span><h2 class="section-gap">${esc(s.primary_model || "连接你的 AI 模型")}</h2><p class="field-help section-gap">在项目根目录 .env 配置模型服务，然后重启本地服务。密钥只保留在服务端。</p><pre class="code-data section-gap">MODEL_CONFIG_JSON='[{"provider":"openai","model":"你的模型名","base_url":"https://你的服务/v1","api_key_env":"AI_MODEL_API_KEY"}]'\nPRIMARY_MODEL=你的模型名\nAI_MODEL_API_KEY=你的密钥</pre><p class="field-help section-gap">模型需支持工具调用。Agent 可查行情、指标、行业板块、财务摘要、基金披露、资料与回测。</p></div>`)}${panel("工作空间", `<div class="panel-body">${metric("运行方式", "本地单用户")}${metric("资产记录", "真实持仓账本")}${metric("网页交易", "未开放")}${metric("资料存储", "本机 MySQL")}<p class="field-help section-gap">公共数据源可能延迟或失效。你可以继续查看缓存数据，界面会保留来源和时间。</p></div>`)}</div><div class="section-gap">${panel("市场视图配色", `<div class="panel-body"><p class="field-help">A股视图采用 Lobster 深蓝底与珊瑚红强调，红涨绿跌；美股视图采用 OG 石板灰底与柔绿交互色，绿涨红跌。持仓盈亏和收益率随视图着色，错误提示保持警示色。选择保存在本机浏览器。</p><div class="palette-options section-gap" role="group" aria-label="市场视图配色"><button type="button" class="palette-option" data-action="set-market-palette" data-palette="cn" aria-pressed="${marketPalette === "cn"}"><span class="palette-example" aria-hidden="true"><i></i><i></i></span>A股视图 · Lobster · 红涨绿跌</button><button type="button" class="palette-option" data-action="set-market-palette" data-palette="us" aria-pressed="${marketPalette === "us"}"><span class="palette-example" aria-hidden="true"><i></i><i></i></span>美股视图 · OG · 绿涨红跌</button></div></div>`)}</div><div class="section-gap">${panel("富途行情 · 本机 OpenD", `<div class="panel-body"><span id="futu-state" class="tag ${futu?.connected ? "accent" : "amber"}">${esc(futuState)}</span><p id="futu-detail" class="field-help section-gap">${futu?.connected ? `最近收到 ${number(futu.last_quote_count, 0)} 条行情 · ${time(futu.last_success)}` : esc(futu?.last_error || '尚未收到富途行情')}</p><p class="field-help section-gap">启动项目时会自动拉起富途 OpenD。点击下方按钮可切换到富途官方登录窗口；完成登录后返回本页查看行情状态。</p><p id="futu-port" class="field-help section-gap">本机 API 端口 127.0.0.1:${number(futu?.opend_port || 11111, 0)} · ${futu?.opend_reachable ? "已监听" : "未监听"}</p><p class="field-help">网页不接收富途密码、验证码或交易密码；当前仅连接行情接口，不执行交易。</p>${futu?.market_errors && Object.keys(futu.market_errors).length ? `<p class="field-help section-gap">市场状态：${Object.entries(futu.market_errors).map(([m,e]) => esc(m + ' ' + e)).join('；')}</p>` : ''}<div class="actions section-gap"><button class="button small primary" data-action="open-futu-login" ${futu?.enabled ? "" : "disabled"}>打开富途 OpenD 登录窗口</button><button class="button small" data-action="refresh-futu-status">刷新连接状态</button><a class="text-link" href="https://openapi.futunn.com/futu-api-doc/quick/opend-base.html" target="_blank" rel="noopener noreferrer">官方安装说明 ↗</a></div></div>`)}</div><div class="section-gap">${panel("市场数据源", `<div class="panel-body provider-list">${state.providers.map((p) => `<article class="provider-item"><div><strong>${esc(p.market_name)}</strong><span class="tag ${p.state === "connected" ? "accent" : "amber"}">${esc({ connected: "已拉取", partial: "部分可用", stale: "缓存过期", error: "连接异常", refreshing: "请求中", waiting: "等待" }[p.state] || p.state)}</span></div><p>${esc(p.provider)} · ${esc(p.endpoint)} · ${number(p.quote_count, 0)} 条记录</p><p>最近接收 ${time(p.last_success)}</p>${p.last_error ? `<details class="section-gap"><summary>查看错误详情</summary><p>${esc(p.last_error)}</p></details>` : ""}<button class="button small section-gap" data-action="refresh-market" data-market="${esc(p.market)}">重新请求</button></article>`).join("")}</div>`)}</div>`,
     ),
   );
+  const content = document.querySelector('#page .content-page');
+  if (content) content.insertAdjacentHTML('beforeend', extensions.error
+    ? `<div class="alert error section-gap" role="alert">扩展配置加载失败：${esc(extensions.error)}</div>`
+    : extensionsMarkup(extensions));
+  if (!extensions.error) mountExtensions(() => renderSettings());
   syncMarketPaletteControls();
   futuStatusTimer = setInterval(async () => {
     if (signal?.aborted || state.route?.name !== 'settings') {
@@ -913,6 +1170,9 @@ async function renderSettings(_route, signal = state.controller?.signal) {
 }
 async function renderRoute() {
   if (!getIdentity() || getIdentity().setup_required) return;
+  if (["/trading", "/accounts", "/account", "/orders", "/live"].includes((location.hash.slice(1) || '').split('?')[0])) {
+    history.replaceState(null, '', '#/holdings');
+  }
   const r = route();
   const samePage = state.route?.name === r.name && r.name !== "chat";
   if (samePage && r.name === "sectors" && !r.id && !state.route.id && activeSectorRotation && state.currentHash !== location.hash) {
@@ -961,8 +1221,13 @@ async function renderRoute() {
   state.route = r;
   state.currentHash = location.hash || "#/chat";
   state.patchPage = samePage;
-  $("#route-label").textContent = titles[r.name] || "页面不存在";
-  document.title = `${r.name === "stocks" && r.id ? r.id : titles[r.name] || "页面不存在"} — Finch`;
+  renderUtilityRail();
+  const routeTitle = r.name === "settings" && r.params.get("section") === "memory" ? "记忆保留期限" : titles[r.name] || "页面不存在";
+  $("#route-label").textContent = routeTitle;
+  const calendarLink = $("#topbar-calendar");
+  if (r.name === "calendar") calendarLink.setAttribute("aria-current", "page");
+  else calendarLink.removeAttribute("aria-current");
+  document.title = `${r.name === "stocks" && r.id ? r.id : routeTitle} — Finch`;
   $("#page").classList.toggle("chat-mode", r.name === "chat");
   if (!samePage) {
     renderSidebar();
@@ -999,6 +1264,7 @@ async function renderRoute() {
         );
       },
       markets: renderMarkets,
+      gold: (r, signal) => renderGold(r, signal, { setPage, page, heading }),
       news: (r, signal) => renderNews(r, signal, paperUI()),
       liquidity: (r, signal) => renderLiquidity(r, signal, paperUI()),
       indices: (r, signal) => renderIndices(r, signal, paperUI()),
@@ -1008,8 +1274,9 @@ async function renderRoute() {
       sectors: renderSectors,
       documents: renderDocuments,
       research: renderResearch,
-      trading: renderTrading,
+      holdings: (r, signal) => renderHoldings(r, signal, { setPage, page, heading }),
       settings: renderSettings,
+      memory: (r, signal) => renderWikiPage(r, signal, { setPage, page, heading }),
       security: async (r, signal) => {
         const html = await renderSecurityPage();
         if (signal.aborted) return;
@@ -1085,6 +1352,7 @@ document.addEventListener("submit", async (e) => {
   if (!(form instanceof HTMLFormElement)) return;
   e.preventDefault();
   if (composing) return;
+  if (await handleHoldingsSubmit(form, renderRoute, formError)) return;
   const values = Object.fromEntries(new FormData(form));
   if (handleCalendarSubmit(form, values)) return;
   if (await handlePaperSubmit(form, values, paperUI())) {
@@ -1329,6 +1597,16 @@ document.addEventListener("input", (e) => {
   }
 });
 document.addEventListener("change", (e) => {
+  if (e.target.id === 'holdings-screenshot') {
+    handleHoldingsScreenshot(e.target.files[0]);
+    return;
+  }
+  if (e.target.id === 'chat-skill-zip') {
+    const file = e.target.files[0];
+    e.target.value = '';
+    installChatSkillZip(file);
+    return;
+  }
   if (e.target.id !== "calendar-account") return;
   const params = new URLSearchParams(location.hash.split("?")[1] || "");
   if (e.target.value) params.set("account", e.target.value);
@@ -1396,6 +1674,10 @@ document.querySelector(".skip-link").addEventListener("click", (e) => {
   e.preventDefault();
   $("#page").focus({ preventScroll: true });
 });
+document.addEventListener("click", (event) => {
+  const summary = event.target.closest(".session-day > summary");
+  if (summary) sessionDayOpen.set(summary.parentElement.dataset.day, !summary.parentElement.open);
+});
 document.addEventListener("click", async (e) => {
   const disabled = e.target.closest('a[aria-disabled="true"]');
   if (disabled) {
@@ -1405,6 +1687,22 @@ document.addEventListener("click", async (e) => {
   const button = e.target.closest("[data-action]");
   if (!button || button.disabled) return;
   const action = button.dataset.action;
+  if (action === "remove-chat-image") {
+    const removed = state.pastedImage;
+    state.pastedImage = null;
+    state.sessionImage = null;
+    const preview = document.getElementById("chat-image-preview");
+    if (preview) preview.innerHTML = "";
+    if (removed?.uploadPromise) removed.uploadPromise.then((uploaded) => {
+      if (uploaded && !uploaded.reused) request('/ai/images/' + encodeURIComponent(uploaded.image_id), { method: 'DELETE' }).catch(() => notify('图片移除失败，请删除对应会话以清理原图'));
+    });
+    document.getElementById("chat-input")?.focus();
+    return;
+  }
+  if (action === 'skill-zip-chat') {
+    document.getElementById('chat-skill-zip')?.click();
+    return;
+  }
   if (await handlePaperAction(button, paperUI())) {
     if (["paper-run-detail", "paper-refresh-runs", "paper-stop"].includes(action)) focusRailCard("trading");
     return;
@@ -1412,7 +1710,61 @@ document.addEventListener("click", async (e) => {
   if (await handleResearchAction(button, paperUI())) return;
   if (await handleCalendarAction(button)) return;
   if (await handleContextAction(button, paperUI())) return;
+  if (await handleGoldAction(button, renderRoute)) return;
+  if (await handleWikiAction(button, renderRoute)) return;
+  if (await handleHoldingsAction(button, renderRoute)) return;
   const id = button.dataset.id;
+  if (action === 'refresh-memory-settings') {
+    await renderSettings();
+    document.querySelector('#memory-settings')?.scrollIntoView({ block: 'start' });
+    return;
+  }
+  if (action === 'save-memory-settings') {
+    const sessionInput = $('#session-retention'), archiveInput = $('#archive-retention');
+    const sessionDays = Number(sessionInput?.value), archiveDays = Number(archiveInput?.value);
+    const error = $('#memory-form-error');
+    if (!Number.isInteger(sessionDays) || sessionDays < 1 || sessionDays > 30) {
+      error.textContent = '会话原文须保留 1–30 天。';
+      sessionInput.setAttribute('aria-invalid', 'true');
+      sessionInput.focus();
+      return;
+    }
+    if (!Number.isInteger(archiveDays) || archiveDays < 1 || archiveDays > 365) {
+      error.textContent = '归档记忆须保留 1–365 天。';
+      archiveInput.setAttribute('aria-invalid', 'true');
+      archiveInput.focus();
+      return;
+    }
+    sessionInput.removeAttribute('aria-invalid');
+    archiveInput.removeAttribute('aria-invalid');
+    error.textContent = '';
+    button.disabled = true;
+    try {
+      await request('/ai/memory/settings', { method: 'PATCH', body: { session_days: sessionDays, archive_days: archiveDays } });
+      notify('记忆保留期限已保存；过期内容已清理');
+      await renderSettings();
+      document.querySelector('#memory-settings')?.scrollIntoView({ block: 'start' });
+    } catch (failure) { error.textContent = failure.message; }
+    finally { button.disabled = false; }
+    return;
+  }
+  if (action === 'import-legacy-sessions') {
+    if (!await confirmDialog('导入旧会话', `<p>仅导入仍在会话保留期内的浏览器聊天。导入后，这些内容会进入每日归档；旧浏览器记录不会自动成为已确认的投资偏好。</p>`, '导入会话')) return;
+    button.disabled = true;
+    try {
+      const sessions = state.legacyChatSessions.map((session) => ({ title: session.title || '旧投研会话', messages: (session.messages || []).filter((message) => !message.management && !privateExtensionText(message.content) && (message.created_at || session.updated_at)).map((message) => ({ role: message.role, content: String(message.content || '').slice(0, 4000), created_at: message.created_at || session.updated_at })) }));
+      const result = await request('/ai/sessions/import', { method: 'POST', body: { sessions } });
+      if (result.imported_messages > 0) {
+        state.legacyChatSessions = [];
+        try { localStorage.removeItem(sessionStoreKey()); } catch (_error) { /* Server copy is authoritative. */ }
+      }
+      notify(`已导入 ${result.imported_messages} 条旧消息`);
+      await refreshShell();
+      await renderSettings();
+    } catch (failure) { notify(failure.message); }
+    finally { button.disabled = false; }
+    return;
+  }
   if (action === "toggle-market-palette" || action === "set-market-palette") {
     setMarketPalette(action === "toggle-market-palette"
       ? marketPalette === "cn" ? "us" : "cn"
@@ -1440,8 +1792,21 @@ document.addEventListener("click", async (e) => {
     return;
   }
   if (action === "open-utility") {
+    if (window.matchMedia("(min-width: 901px)").matches && route().name === "chat" && !state.railVisible) {
+      state.railVisible = true;
+      saveRailPrefs();
+      renderUtilityRail();
+      return;
+    }
     $("#utility-dialog-content").innerHTML = utilityRailMarkup();
     $("#utility-dialog").showModal();
+    return;
+  }
+  if (action === "hide-rail") {
+    state.railVisible = false;
+    saveRailPrefs();
+    button.closest("dialog")?.close();
+    renderUtilityRail();
     return;
   }
   if (action === "manage-rail") {
@@ -1519,6 +1884,8 @@ document.addEventListener("click", async (e) => {
     persistChatSession();
     state.messages = [];
     state.draft = "";
+    state.pastedImage = null;
+    state.sessionImage = null;
     state.accountId = null;
     state.activeChatId = null;
     if (state.route.name === "chat") renderChat();
@@ -1530,7 +1897,17 @@ document.addEventListener("click", async (e) => {
     return;
   }
   if (action === "retry-chat") {
-    sendChat(state.messages[Number(button.dataset.index)].question);
+    const index = Number(button.dataset.index);
+    const original = state.messages[index - 1];
+    if (original?.imageAttached && !original.imageId && !original.imagePreview) {
+      notify('此旧会话的原图未保留，请重新粘贴图片后发送');
+      return;
+    }
+    if (original?.imageAttached && !original.imageId && original.imagePreview) {
+      state.pastedImage = { dataUrl: original.imagePreview, filename: 'retry-image.png', size: 0,
+        uploadPromise: Promise.resolve(null) };
+    }
+    sendChat(state.messages[index].question, original?.imageId || null);
     return;
   }
   if (action === "copy-message") {
@@ -1567,6 +1944,7 @@ document.addEventListener("click", async (e) => {
         },
       ];
       state.activeChatId = `history-${d.run_id}`;
+      state.sessionImage = null;
       persistChatSession();
       if (state.route.name === "chat") renderChat();
       else location.hash = "/chat";
@@ -1578,23 +1956,37 @@ document.addEventListener("click", async (e) => {
   if (action === "open-session") {
     if (state.sending) { notify("请等待当前研究完成"); return; }
     persistChatSession();
-    const session = state.chatSessions.find((item) => item.id === id);
-    if (!session) return;
-    state.activeChatId = session.id;
-    state.messages = session.messages.map((message) => ({ ...message }));
-    state.draft = "";
-    if (state.route?.name === "chat") renderChat();
-    else location.hash = "/chat";
+    try {
+      const listed = state.chatSessions.find((item) => item.id === id);
+      const session = listed?.source === 'server'
+        ? await request("/ai/sessions/" + encodeURIComponent(id))
+        : listed;
+      if (!session) throw new Error('会话已不可用，请刷新页面');
+      state.activeChatId = session.id;
+      state.sessionImage = listed?.source === 'server'
+        ? await request('/ai/images/latest?session_id=' + encodeURIComponent(session.id)).catch(() => null)
+        : null;
+      state.memoryStatus = "ready";
+      state.messages = (session.messages || []).map((message) => ({ ...message }));
+      state.draft = "";
+      if (state.route?.name === "chat") renderChat();
+      else location.hash = "/chat";
+    } catch (error) { notify(error.message); }
     return;
   }
   if (action === "delete-session") {
     if (state.sending) { notify("请等待当前研究完成"); return; }
-    state.chatSessions = state.chatSessions.filter((item) => item.id !== id);
-    try { localStorage.setItem(sessionStoreKey(), JSON.stringify(state.chatSessions)); } catch (_error) { /* Session remains removed for this visit. */ }
-    if (state.activeChatId === id) { state.activeChatId = null; state.messages = []; }
-    renderSidebar();
-    if (state.route?.name === "chat") renderChat();
-    notify("会话已删除");
+    if (!state.serverChatSessions.some((item) => item.id === id)) return;
+    if (!await confirmDialog('删除投研会话', '<p>会删除服务端会话及仅由它支持的记忆；受影响日报会重新归档。</p>', '删除会话', true)) return;
+    try {
+      await request("/ai/sessions/" + encodeURIComponent(id), { method: "DELETE" });
+      state.serverChatSessions = state.serverChatSessions.filter((item) => item.id !== id);
+      rebuildChatSessions();
+      if (state.activeChatId === id) { state.activeChatId = null; state.messages = []; state.sessionImage = null; }
+      renderSidebar();
+      if (state.route?.name === "chat") renderChat();
+      notify("会话及仅由它支持的记忆已删除");
+    } catch (error) { notify(error.message); }
     return;
   }
   if (action === "show-evidence" || action === "all-evidence") {
@@ -1623,7 +2015,7 @@ document.addEventListener("click", async (e) => {
   if (action === "account-context") {
     showDialog(
       "账户研究上下文",
-      `<p>开启后，当前对话的后续请求可把所选账户的币种、现金和持仓数量发送给配置的模型。</p><label class="field-label section-gap" for="context-account">选择账户</label><select id="context-account" class="field"><option value="">不读取账户</option>${state.accounts.map((a) => `<option value="${esc(a.account_id)}" ${state.accountId === a.account_id ? "selected" : ""}>${esc(a.label)} · ${esc(a.currency)}</option>`).join("")}</select>`,
+      `<p>开启后，当前对话的后续请求可把所选真实账户的币种、现金、持仓和盈亏发送给配置的模型。</p><label class="field-label section-gap" for="context-account">选择账户</label><select id="context-account" class="field"><option value="">不读取账户</option>${state.accounts.filter((a) => a.mode !== 'paper').map((a) => `<option value="${esc(a.account_id)}" ${state.accountId === a.account_id ? "selected" : ""}>${esc(a.label)} · ${esc(a.currency)}</option>`).join("")}</select>`,
       `<button class="button primary" data-action="save-account-context">保存选择</button>`,
     );
     return;
@@ -1809,12 +2201,20 @@ window.addEventListener("online", () => {
 $(".mobile-menu").innerHTML = icon("menu");
 $(".utility-toggle").innerHTML = icon("grid");
 $("#search-icon").innerHTML = icon("search");
+$(".topbar-calendar-icon").innerHTML = icon("calendar");
 let initializedUI = false;
 function startWorkspace() {
-  state.chatSessions = loadChatSessions();
+  clearHoldingsDraft();
+  state.pastedImage = null;
+  state.sessionImage = null;
+  state.legacyChatSessions = loadChatSessions();
+  state.serverChatSessions = [];
+  state.history = [];
+  rebuildChatSessions();
   state.activeChatId = null;
   renderSidebar();
   renderUtilityRail();
+  startCalendarAlarms();
   renderRoute();
   refreshShell().then(() => {
     if (state.route?.name === "markets") renderRoute();
@@ -1824,6 +2224,10 @@ document.addEventListener("finch:authenticated", () => {
   if (initializedUI) startWorkspace();
 });
 document.addEventListener("finch:locked", () => {
+  clearHoldingsDraft();
+  state.pastedImage = null;
+  state.sessionImage = null;
+  stopCalendarAlarms();
   cleanupPaper();
   cleanupCalendar();
   cleanupContext();
@@ -1832,6 +2236,8 @@ document.addEventListener("finch:locked", () => {
   document.title = "登录 — Finch";
 });
 document.addEventListener("finch:signed-out", () => {
+  clearHoldingsDraft();
+  stopCalendarAlarms();
   cleanupPaper();
   cleanupCalendar();
   cleanupContext();
@@ -1839,6 +2245,8 @@ document.addEventListener("finch:signed-out", () => {
   state.controller?.abort();
   state.messages = [];
   state.draft = "";
+  state.pastedImage = null;
+  state.sessionImage = null;
   state.accountId = null;
   state.watch = [];
   state.accounts = [];
@@ -1869,3 +2277,9 @@ async function bootstrapIdentity() {
 }
 bootstrapIdentity();
 setInterval(refreshShell, 60000);
+setInterval(() => {
+  if (getIdentity() && state.route?.name === 'holdings' && document.visibilityState === 'visible'
+      && document.getElementById('holding-editor')?.hidden && document.getElementById('holding-import')?.hidden) {
+    renderRoute();
+  }
+}, 60000);

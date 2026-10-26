@@ -74,6 +74,7 @@ def _quote_from_row(market: str, row: dict[str, Any], received_at: str, source: 
     currency = {"CN": "CNY", "HK": "HKD", "US": "USD", "FUND": "CNY", "GOLD": "CNY"}[market]
     exch_time = _text(_pick(row, ("更新时间", "时间戳", "日期时间", "数据时间", "ticktime", "time", "时间", "日期")))
     is_sina_us = market == "US" and "stock_us_spot" in endpoint
+    provider = "东方财富网页行情 · AKShare" if market == "CN" and endpoint.endswith("_em") else source
     return {
         "instrument_id": f"{market}:{symbol}",
         "symbol": symbol,
@@ -86,7 +87,7 @@ def _quote_from_row(market: str, row: dict[str, Any], received_at: str, source: 
         "price_unit": "CNY/g" if market == "GOLD" else ("CNY/unit" if is_mutual_fund else f"{currency}/share"),
         "exchange_time": exch_time,
         "received_at": received_at,
-        "provider": f"{source} · 公募基金净值" if is_mutual_fund else (f"{source} · ETF" if market == "FUND" else source),
+        "provider": f"{provider} · 公募基金净值" if is_mutual_fund else (f"{provider} · ETF" if market == "FUND" else provider),
         "freshness": "end_of_day" if is_mutual_fund else ("delayed" if is_sina_us else "unknown"),
         "known_delay_seconds": 900 if is_sina_us else None,
         "change_percent": _number(_pick(row, ("涨跌幅", "涨跌幅(%)", "涨跌幅%", "change_percent", "changepercent", "zdf"))),
@@ -95,10 +96,12 @@ def _quote_from_row(market: str, row: dict[str, Any], received_at: str, source: 
 
 
 def fetch_market(market: str) -> list[dict[str, Any]]:
-    """Fetch one documented AKShare snapshot and normalize its rows.
+    """Fetch and normalize a market snapshot, preserving its underlying source.
 
     Freshness is deliberately unknown unless the upstream response provides a
     trustworthy observation timestamp. Receive time is never treated as quote time.
+    For mainland China, stock_zh_a_spot_em calls Eastmoney's public quote page
+    endpoint; the provider label makes that source visible behind the AKShare adapter.
     """
     import akshare as ak
 
@@ -144,6 +147,8 @@ def fetch_market(market: str) -> list[dict[str, Any]]:
                 if not rows:
                     raise RuntimeError("no normalizable rows")
                 ACTIVE_ENDPOINTS[market] = endpoint
+                if market == "CN" and endpoint.endswith("_em"):
+                    ACTIVE_ENDPOINTS[market] = f"东方财富网页行情 ({endpoint} via AKShare)"
                 return rows
             except Exception as exc:
                 failures.append(f"{endpoint}: {type(exc).__name__}: {str(exc)[:160]}")
