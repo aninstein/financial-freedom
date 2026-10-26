@@ -1,0 +1,263 @@
+openapi: 3.1.0
+info:
+  title: Financial Freedom Quant API
+  version: 0.1.0
+  description: Local first-phase market data and paper trading API. No live brokerage order routes.
+servers:
+  - url: http://127.0.0.1:8000/api/v1
+paths:
+  /health:
+    get:
+      summary: App health
+      responses:
+        '200': { description: Healthy process }
+  /providers:
+    get:
+      summary: Provider health and entitlements
+      responses:
+        '200': { description: Provider states, last success/error, failure count, next retry time and supported markets }
+  /markets/status:
+    get:
+      summary: Calendar-derived market sessions
+      parameters:
+        - { name: market, in: query, schema: { type: string } }
+      responses:
+        '200': { description: Session state with timezone, next open/close and calendar version }
+  /instruments:
+    get:
+      summary: Search configured provider-backed instrument directory
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: market, in: query, schema: { type: string } }
+      responses:
+        '200': { description: Canonical instruments and aliases }
+  /watchlist:
+    get:
+      summary: Get watchlist
+      responses:
+        '200':
+          description: Watchlist quotes, latest stored daily-bar date, persistent history-job state, and any ingestion error
+    post:
+      summary: Add instrument to watchlist
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [instrument_id]
+              properties:
+                instrument_id: { type: string }
+      responses:
+        '201': { description: Added }
+  /quotes:
+    get:
+      summary: Get latest quotes; provider calls may be asynchronous
+      parameters:
+        - { name: instrument_id, in: query, schema: { type: array, items: { type: string } } }
+        - { name: market, in: query, schema: { type: string } }
+      responses:
+        '200': { description: Quote values with provider and freshness metadata }
+        '503': { description: No available provider data; includes per-provider errors }
+  /bars:
+    get:
+      summary: Get normalized historical OHLCV bars
+      parameters:
+        - { name: instrument_id, in: query, required: true, schema: { type: string } }
+        - { name: interval, in: query, required: false, schema: { type: string, enum: [1d], default: 1d } }
+        - { name: start, in: query, required: false, schema: { type: string, format: date } }
+        - { name: end, in: query, required: false, schema: { type: string, format: date } }
+      responses:
+        '200': { description: Bars and dataset version }
+  /bars/pull:
+    post:
+      summary: Pull daily bars for a configured instrument and persist a versioned dataset
+      parameters:
+        - { name: instrument_id, in: query, required: true, schema: { type: string, example: GOLD:Au99.99 } }
+        - { name: start, in: query, required: true, schema: { type: string, format: date } }
+        - { name: end, in: query, required: true, schema: { type: string, format: date } }
+        - { name: interval, in: query, required: false, schema: { type: string, enum: [1d], default: 1d } }
+      responses:
+        '202': { description: Historical pull completed and persisted }
+        '502': { description: Provider request failed }
+  /accounts:
+    get:
+      summary: List manual, read-only and paper accounts
+      responses:
+        '200': { description: Account snapshots with mode, currency, as-of and source }
+  /accounts/manual:
+    post:
+      summary: Save a local manual account snapshot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label, currency]
+              properties:
+                label: { type: string }
+                currency: { type: string, minLength: 3, maxLength: 3 }
+                cash: { type: number, minimum: 0 }
+                as_of: { type: string, format: date-time }
+                positions: { type: array, items: { type: object } }
+      responses:
+        '201': { description: Saved local manual snapshot }
+        '422': { description: Invalid snapshot or mixed currencies }
+  /paper/orders:
+    get:
+      summary: List paper orders
+      responses:
+        '200': { description: Paper orders and status }
+    post:
+      summary: Validate and create an internal paper order
+      parameters:
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [account_id, instrument_id, side, type, quantity]
+              properties:
+                account_id: { type: string }
+                instrument_id: { type: string }
+                side: { type: string, enum: [buy, sell] }
+                type: { type: string, enum: [market, limit] }
+                quantity: { type: number, exclusiveMinimum: 0 }
+                limit_price: { type: number, exclusiveMinimum: 0 }
+      responses:
+        '201': { description: Paper order accepted/rejected with risk details }
+        '409': { description: Idempotency conflict }
+        '422': { description: Validation failure }
+  /paper/orders/preview:
+    post:
+      summary: Read-only risk and cash estimate for a paper order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [account_id, instrument_id, side, type, quantity]
+              properties:
+                account_id: { type: string }
+                instrument_id: { type: string }
+                side: { type: string, enum: [buy, sell] }
+                type: { type: string, enum: [market, limit] }
+                quantity: { type: number, exclusiveMinimum: 0 }
+                limit_price: { type: number, exclusiveMinimum: 0 }
+      responses:
+        '200': { description: Estimate, risk checks and quote provenance; no order is created }
+        '404': { description: Paper account not found }
+        '422': { description: Validation failure }
+  /paper/orders/{order_id}/cancel:
+    post:
+      summary: Cancel an open paper limit order
+      parameters:
+        - { name: order_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Cancelled paper order }
+        '404': { description: Order not found }
+        '409': { description: Order is no longer open }
+  /ai/status:
+    get:
+      summary: AI model readiness and read-only tool inventory
+      responses:
+        '200': { description: Configuration status without model credentials }
+  /ai/documents:
+    get:
+      summary: List uploaded research documents
+      responses:
+        '200': { description: User-imported documents and hashes }
+    post:
+      summary: Import text PDF or UTF-8 research document
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+                document_type: { type: string, enum: [research_report, financial_report, announcement, other] }
+                instrument_id: { type: string }
+                report_period: { type: string }
+      responses:
+        '201': { description: Document text extracted and indexed with page locators }
+        '413': { description: File or extraction limit exceeded }
+        '415': { description: Unsupported file type }
+  /ai/documents/{document_id}:
+    delete:
+      summary: Delete a document and its extracted search text
+      parameters:
+        - { name: document_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Document deleted }
+        '404': { description: Document not found }
+  /ai/documents/{document_id}/file:
+    get:
+      summary: Download the locally stored original document
+      parameters:
+        - { name: document_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Original user document }
+        '404': { description: Document not found }
+  /ai/research:
+    get:
+      summary: List recent AI research runs and evidence
+      responses:
+        '200': { description: Research history }
+    post:
+      summary: Run a bounded read-only AI research task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties:
+                question: { type: string, minLength: 3, maxLength: 4000 }
+                max_tool_calls: { type: integer, minimum: 1, maximum: 8, default: 6 }
+                include_account: { type: boolean, default: false }
+                account_id: { type: string }
+      responses:
+        '201': { description: Evidence-backed research report; no trade action }
+        '502': { description: Model service failure }
+        '503': { description: Model not configured }
+  /ai/research/{run_id}:
+    get:
+      summary: Read one AI research run
+      parameters:
+        - { name: run_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Research report and evidence }
+        '404': { description: Run not found }
+  /research/backtests:
+    get:
+      summary: List deterministic historical research runs
+      responses:
+        '200': { description: Historical runs with dataset version and metrics }
+    post:
+      summary: Run the SMA trend baseline against stored daily bars
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [instrument_id, start, end]
+              properties:
+                instrument_id: { type: string }
+                start: { type: string, format: date }
+                end: { type: string, format: date }
+                fast_window: { type: integer, minimum: 2, default: 20 }
+                slow_window: { type: integer, minimum: 3, default: 50 }
+                fee_bps: { type: number, default: 10 }
+                slippage_bps: { type: number, default: 5 }
+      responses:
+        '201': { description: Historical result pinned to a dataset version }
+        '422': { description: Invalid parameters or insufficient history }

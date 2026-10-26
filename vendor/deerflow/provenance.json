@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/bytedance/deer-flow",
+  "commit": "e9074b7126833b5ca4739bcedcbbed01b211246c",
+  "version": "2.1.0",
+  "modified": false,
+  "sha256": {
+    "vendor/deerflow/deerflow-harness-e9074b7.tar.gz": "fa134a76bdd1b5f6fbae5b4720319cebab38a978525349ac4b3544d134d11292",
+    "vendor/deerflow/deerflow-extension-api-e9074b7.tar.gz": "c483f602d46fcbe9e3f4297507e0a2b83e6faca6b0981bd10db729ffd189c167"
+  }
+}

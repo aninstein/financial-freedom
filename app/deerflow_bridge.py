@@ -1,0 +1,80 @@
+"""Async local-socket bridge to the pinned Python 3.12 DeerFlow service."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import socket
+from pathlib import Path
+from typing import Any
+
+from app.ai_agent import AgentUnavailable
+
+
+ROOT = Path(__file__).resolve().parent.parent
+RUNTIME_PYTHON = ROOT / "runtime" / ".venv" / "bin" / "python"
+
+
+def socket_path() -> Path:
+    return Path(os.getenv("DATA_DIR", ROOT / "data")).resolve() / "deerflow" / "worker.sock"
+
+
+def runtime_ready() -> bool:
+    if os.getenv('CONTAINER_RUNTIME') == 'true':
+        return socket_path().is_socket()
+    installed = (
+        RUNTIME_PYTHON.is_file()
+        and os.access(RUNTIME_PYTHON, os.X_OK)
+        and (ROOT / "runtime" / ".ready").is_file()
+        and socket_path().is_socket()
+    )
+    if not installed:
+        return False
+    try:
+        with socket.socket(socket.AF_UNIX) as probe:
+            probe.settimeout(0.5)
+            probe.connect(str(socket_path()))
+        return True
+    except OSError:
+        return False
+
+
+async def run_deerflow_research(
+    *, run_id: str, owner_id: str, question: str, history: list[dict[str, str]],
+    max_tool_calls: int, timeout: float, account_id: str | None = None,
+    account_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not runtime_ready():
+        raise AgentUnavailable("DeerFlow 尚未就绪；请运行 ./scripts/setup-deerflow.sh 并重启 ./run-local.sh")
+    payload = {
+        "run_id": run_id, "owner_id": owner_id, "question": question,
+        "history": history, "max_tool_calls": max_tool_calls,
+        "account_id": account_id, "account_snapshot": account_snapshot,
+    }
+
+    async def exchange() -> dict[str, Any]:
+        reader, writer = await asyncio.open_unix_connection(str(socket_path()))
+        try:
+            writer.write(json.dumps(payload, ensure_ascii=False, default=str).encode() + b"\n")
+            await writer.drain()
+            line = await reader.readline()
+            if not line:
+                raise AgentUnavailable("DeerFlow worker 已断开")
+            response = json.loads(line)
+            if not response.get("ok"):
+                raise AgentUnavailable("DeerFlow 运行失败：" + str(response.get("error", "RuntimeError")))
+            result = response.get("result")
+            if not isinstance(result, dict):
+                raise AgentUnavailable("DeerFlow 返回格式无效")
+            return result
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    try:
+        return await asyncio.wait_for(exchange(), timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        raise AgentUnavailable("DeerFlow 研究任务超时") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AgentUnavailable("DeerFlow worker 连接失败") from exc

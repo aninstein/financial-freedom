@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>AI 投研 — Finch</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#page">跳到主要内容</a>
+    <div id="identity-root"></div>
+    <div class="workspace" hidden>
+      <aside class="sidebar" id="sidebar" aria-label="工作台导航"></aside>
+      <main class="main-shell">
+        <header class="topbar">
+          <button
+            class="icon-button mobile-menu"
+            data-action="open-nav"
+            aria-label="打开导航"
+          ></button>
+          <div class="breadcrumb">
+            <span>工作台</span><span aria-hidden="true">/</span
+            ><strong id="route-label">投研对话</strong>
+          </div>
+          <form
+            class="global-search"
+            id="global-search"
+            novalidate
+            role="search"
+          >
+            <span id="search-icon" aria-hidden="true"></span
+            ><label class="sr-only" for="global-query"
+              >搜索股票名称或代码</label
+            >
+            <span class="instrument-search global-search-field"><input
+              id="global-query"
+              name="query"
+              placeholder="搜索股票名称或代码"
+              autocomplete="off"
+              data-instrument-picker="navigate"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-controls="global-query-results"
+              aria-expanded="false"
+            /><span class="instrument-results" id="global-query-results" role="listbox" hidden></span></span>
+            <button
+              type="button"
+              class="search-clear"
+              data-action="clear-global"
+              aria-label="清空搜索"
+              hidden
+            >
+              ×
+            </button>
+            <button class="global-search-submit" type="submit" aria-label="搜索股票">搜索</button>
+          </form>
+          <button
+            class="palette-toggle"
+            type="button"
+            data-action="toggle-market-palette"
+            id="market-palette-toggle"
+            aria-label="切换行情涨跌配色"
+            title="切换行情涨跌配色"
+          ><span class="palette-swatch" aria-hidden="true"><i></i><i></i></span><span class="palette-toggle-label" id="market-palette-label">A股视图</span></button>
+          <span class="mode-label"
+            ><span class="status-dot"></span>本地工作空间</span
+          >
+          <button class="icon-button utility-toggle" data-action="open-utility" aria-label="打开工作台卡片栏"></button>
+        </header>
+        <div class="page-scroll" id="page-scroll">
+          <div id="page" tabindex="-1"></div>
+        </div>
+      </main>
+      <aside class="utility-rail" id="utility-rail" aria-label="工作台功能卡片"></aside>
+    </div>
+    <dialog id="app-dialog" aria-labelledby="dialog-title">
+      <div id="dialog-content"></div>
+    </dialog>
+    <dialog id="nav-dialog" aria-label="导航菜单">
+      <div class="dialog-head">
+        <strong>工作台</strong
+        ><button
+          class="icon-button"
+          data-action="close-dialog"
+          aria-label="关闭导航"
+        >
+          ×
+        </button>
+      </div>
+      <nav id="mobile-nav"></nav>
+    </dialog>
+    <dialog id="utility-dialog" class="utility-dialog" aria-label="工作台卡片">
+      <div class="dialog-head"><strong>工作台卡片</strong><button class="icon-button" data-action="close-dialog" aria-label="关闭卡片栏">×</button></div>
+      <div id="utility-dialog-content" class="utility-dialog-content"></div>
+    </dialog>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/assets/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,30 @@
+{
+  "profile": "product-admin",
+  "sourceRoots": [
+    "prototype"
+  ],
+  "locale": "zh-CN",
+  "canonicalMap": "UX-CONTRACT.md",
+  "requiredCapabilities": [
+    "Select/Listbox",
+    "Date",
+    "Form",
+    "Scrollbar",
+    "Toast",
+    "CRUD"
+  ],
+  "ownership": {
+    "Select/Listbox": "native",
+    "Date": "native"
+  },
+  "requiredCommands": [
+    "syntax"
+  ],
+  "commands": {
+    "syntax": "node --check prototype/market-context.js && node --check prototype/market-research.js && node --check prototype/live.js && node --check prototype/paper.js && node --check prototype/app.js && node --check prototype/ui.js && node --check prototype/api.js && node --check prototype/identity.js && node --check prototype/stock.js"
+  },
+  "evidence": {
+    "crudFullFlow": "artifacts/ui/identity-dossier-verification.md",
+    "failurePaths": "artifacts/ui/identity-dossier-verification.md"
+  }
+}

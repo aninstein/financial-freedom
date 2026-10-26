@@ -1,0 +1,99 @@
+name: financial-freedom
+
+x-app: &app
+  image: financial-freedom:local
+  env_file:
+    - path: .env
+      required: false
+  environment: &app-env
+    HOST: 0.0.0.0
+    PORT: '8000'
+    DATA_DIR: /app/data
+    CONTAINER_RUNTIME: 'true'
+    APP_CONTAINER_LOOPBACK_ONLY: 'true'
+    MYSQL_HOST: mysql
+    MYSQL_PORT: '3306'
+    MYSQL_DATABASE: financial_freedom
+    MYSQL_USER: financial_freedom
+    MYSQL_PASSWORD_FILE: /run/secrets/mysql_password
+    FUTU_OPEND_HOST: host.docker.internal
+  secrets: [mysql_password]
+  volumes: [agent-data:/app/data]
+  init: true
+
+services:
+  mysql:
+    image: mysql:8.4.7@sha256:0426ec38c7a10aa45ba383887df7878f74ee70e2fd589c7b69207f3577901903
+    command: [mysqld, --ngram_token_size=2]
+    environment:
+      MYSQL_DATABASE: financial_freedom
+      MYSQL_USER: financial_freedom
+      MYSQL_PASSWORD_FILE: /run/secrets/mysql_password
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root_password
+    secrets: [mysql_password, mysql_root_password]
+    volumes: [mysql-data:/var/lib/mysql]
+    healthcheck:
+      test: [CMD-SHELL, 'MYSQL_PWD="$$(cat /run/secrets/mysql_password)" mysql --user=financial_freedom --database=financial_freedom --execute="SELECT 1" --silent']
+      interval: 5s
+      timeout: 3s
+      retries: 40
+    restart: unless-stopped
+
+  migrate:
+    <<: *app
+    volumes:
+      - agent-data:/app/data
+      - ./data:/app/legacy:ro
+    command: [python, -m, app.mysql_migrate]
+    depends_on:
+      mysql: {condition: service_healthy}
+    restart: 'no'
+
+  deerflow:
+    <<: *app
+    command: [python, -m, app.deerflow_service]
+    depends_on:
+      mysql: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, python, -c, "import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect('/app/data/deerflow/worker.sock'); s.close()"]
+      interval: 10s
+      timeout: 4s
+      start_period: 90s
+      retries: 12
+    restart: unless-stopped
+
+  web:
+    <<: *app
+    build:
+      context: .
+      args:
+        FINCH_UID: ${FINCH_UID:-1000}
+    environment:
+      <<: *app-env
+      FUTU_OPEND_HOST: host.docker.internal
+    secrets: [mysql_password, futu_launcher_token]
+    ports: ['127.0.0.1:${APP_PORT:-8000}:8000']
+    depends_on:
+      mysql: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      deerflow: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      start_period: 120s
+      retries: 12
+    restart: unless-stopped
+
+secrets:
+  mysql_password:
+    file: .runtime/secrets/mysql-password
+  mysql_root_password:
+    file: .runtime/secrets/mysql-root-password
+  futu_launcher_token:
+    file: .runtime/secrets/futu-launcher-token
+
+volumes:
+  mysql-data:
+  agent-data:
