@@ -12,7 +12,7 @@ import json
 import sys
 import threading
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from langchain_core.tools import StructuredTool
 
@@ -29,6 +29,7 @@ class RunState:
     allowed: frozenset[str]
     max_calls: int
     skill_names: frozenset[str] = frozenset()
+    progress: Callable[[dict[str, Any]], None] | None = None
     activated_skills: set[str] = field(default_factory=set)
     calls: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -59,6 +60,8 @@ def _execute(name: str, args: dict[str, Any]) -> str:
             return json.dumps({"error": "达到本轮工具调用上限，请使用已有证据给出操作建议"}, ensure_ascii=False)
         state.calls += 1
         print(f"finch deerflow tool run={state.run_id} number={state.calls} name={name}", file=sys.stderr, flush=True)
+    if state.progress:
+        state.progress({"type": "tool_start", "name": name, "number": state.calls})
     try:
         if name == 'get_investment_memory':
             try:
@@ -81,14 +84,18 @@ def _execute(name: str, args: dict[str, Any]) -> str:
             result = {'name': chosen, 'path': args.get('path'),
                       'content': agent_extensions.read_skill(chosen, str(args.get('path', '')))[:16000]}
         elif name.startswith('mcp__'):
-            result = asyncio.run(agent_extensions.call_mcp_tool(name, args))
-            evidence = state.tools._evidence('mcp_tool', f"{result['server']} / {result['tool']}",
-                                             f"MCP: {result['server']}", None, result)
-            result = {'evidence': [evidence], **result}
+            result = asyncio.run(agent_extensions.call_mcp_tool(name, args, state.owner_id))
+            if not result.get('isError'):
+                evidence = state.tools._evidence('mcp_tool', f"{result['server']} / {result['tool']}",
+                                                 f"MCP: {result['server']}", None, result)
+                result = {'evidence': [evidence], **result}
         else:
             result = asyncio.run(state.tools.execute(name, args))
     except Exception as exc:
         result = {"error": f"工具不可用：{type(exc).__name__}"}
+    if state.progress:
+        state.progress({"type": "tool_end", "name": name, "number": state.calls,
+                        "ok": "error" not in result})
     return json.dumps(result, ensure_ascii=False, default=str)[:24000]
 
 

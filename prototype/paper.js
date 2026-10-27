@@ -55,9 +55,9 @@ function tradingTabs(active, route) {
     const params = new URLSearchParams(route.params);
     params.set("tab", tab);
     params.delete(tab === "orders" ? "account_page" : "page");
-    return `#/trading?${params.toString()}`;
+    return `#/paper?${params.toString()}`;
   };
-  return `<nav class="paper-trading-tabs" aria-label="模拟交易功能"><a href="${href("accounts")}" ${active === "accounts" ? 'aria-current="page"' : ""}>账户与持仓</a><a href="${href("orders")}" ${active === "orders" ? 'aria-current="page"' : ""}>下单与订单</a></nav>`;
+  return `<nav class="paper-trading-tabs" aria-label="模拟交易来源"><a href="#/paper" aria-current="page">本地模拟</a><a href="#/paper?source=futu">富途模拟</a></nav><nav class="paper-trading-tabs" aria-label="本地模拟功能"><a href="${href("accounts")}" ${active === "accounts" ? 'aria-current="page"' : ""}>账户与持仓</a><a href="${href("orders")}" ${active === "orders" ? 'aria-current="page"' : ""}>下单与订单</a></nav>`;
 }
 function orderEvidence(order) {
   let risk = {};

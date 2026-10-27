@@ -510,6 +510,10 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 sensitive = sensitive or (request.method in {'POST', 'DELETE'} and path.startswith('/api/v1/agent/extensions/'))
                 sensitive = sensitive or (request.method == 'PUT' and path.startswith('/api/v1/agent/extensions/mcp/'))
                 sensitive = sensitive or (request.method == 'PUT' and path.startswith('/api/v1/holdings/'))
+                sensitive = sensitive or (request.method == 'POST' and (
+                    path in {'/api/v1/live/orders', '/api/v1/futu-paper/orders'}
+                    or (path.startswith('/api/v1/live/orders/') or path.startswith('/api/v1/futu-paper/orders/')) and path.endswith('/cancel')
+                ))
                 if sensitive and int(time.time()) - session['reauth_at'] > 300:
                     fail('REAUTH_REQUIRED', '请重新验证身份后执行敏感操作。', 428)
                 if request.method not in {'GET', 'HEAD', 'OPTIONS'}:

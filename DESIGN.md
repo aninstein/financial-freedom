@@ -117,7 +117,7 @@ Panels use 16px corners, controls use 10px, and semantic statuses use pill shape
 
 ## Components
 
-Recommendations show direction, horizon, confidence, timestamp, data sources, strategy/backtest reference, and risk caveat. Account balances show institution, currency, as-of time, and connection status. Manual orders are previewed and risk-checked before confirmation. AI paper-trading rounds use a separate explicit mandate: fixed account, symbols, nominal order budget and order count. In the prototype, all order actions are paper-trading simulations.
+Recommendations show direction, horizon, confidence, timestamp, data sources, strategy/backtest reference, and risk caveat. Account balances show institution, currency, as-of time, and connection status. Manual orders are previewed and risk-checked before confirmation. AI paper-trading rounds use a separate explicit mandate: fixed account, symbols, nominal order budget and order count. Futu real orders require an explicit individual confirmation and separate server-side sending gates; AI has no real-order tool.
 
 ## Do's and Don'ts
 
@@ -144,7 +144,7 @@ Reuse the vermilion panels, shared forms, market tones and modal confirmation. A
 
 ## Research And Paper Lifecycle Surfaces
 
-The active product consists of chat, independent paper accounts, stock dossiers, index research, document research and flow coverage. The real broker surface is deferred and unregistered. Reuse the existing stock OHLC chart for index points, with a separate index route and explicit daily cutoff. Index data never appears as an executable stock.
+The active product consists of chat, independent local and Futu paper accounts, a Futu real-account trading surface, stock dossiers, index research, document research and flow coverage. Real order submission is disabled by default and requires per-account and per-symbol configuration, limits, manual OpenD unlock, and confirmation for each order. Reuse the existing stock OHLC chart for index points, with a separate index route and explicit daily cutoff. Index data never appears as an executable stock.
 
 Cycle statistics use shared stat cards, data tables and source footnotes. Always show sample dates and counts; show an em dash for unavailable statistics. Monthly seasonality is descriptive and labels small samples. Fund collection uses the shared form controls, field errors and per-fund source/status. Paper reset uses the shared destructive dialog, fresh identity verification and user-entered new capital. Preserve the warm graphite/vermilion theme and Chinese red-up/green-down convention.
 

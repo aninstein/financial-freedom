@@ -22,6 +22,8 @@ import {
   handlePaperAction,
   cleanupPaper,
 } from "./paper.js";
+import { renderLive, handleLiveSubmit, handleLiveAction } from "./live.js";
+import { renderFutuPaper, handleFutuPaperSubmit, handleFutuPaperAction } from "./futu-paper.js";
 import {
   requireIdentity,
   getIdentity,
@@ -38,10 +40,11 @@ import {
   handleCalendarAction,
   handleCalendarSubmit,
   addAICalendarPlan,
+  loadCalendarState,
   startCalendarAlarms,
   stopCalendarAlarms,
 } from "./calendar.js";
-import { API, request, postOrder } from "./api.js";
+import { API, request, requestEvents, postOrder } from "./api.js";
 import { extensionsMarkup, mountExtensions } from "./agent-extensions.js";
 import { renderWikiPage, handleWikiAction } from "./investment-wiki.js";
 import { renderHoldings, handleHoldingsAction, handleHoldingsSubmit, handleHoldingsScreenshot, previewChatHoldingsScreenshot, clearHoldingsDraft, isHoldingsImportIntent } from "./holdings.js";
@@ -75,6 +78,7 @@ const $ = (s) => document.querySelector(s);
 installInstrumentSearch();
 const MARKET_PALETTE_KEY = "finch.marketPalette";
 const RAIL_KEY = "finch.workspaceRail.v1";
+const RAIL_MIGRATION_KEY = "finch.workspaceRail.migratedOwner";
 const CHAT_SESSIONS_KEY = "finch.aiSessions.v1";
 const features = [
   ["calendar", "calendar", "交易日历", "#calendar", "市场开闭市、计划与打新订阅"],
@@ -87,6 +91,7 @@ const features = [
   ["flows", "wallet", "资金与基金", "#flows", "资金统计、基金与披露"],
   ["sectors", "layers", "板块轮动与资金", "#sectors", "行业强弱、轮动与成分股"],
   ["research", "flask", "策略研究", "#research", "策略实验、回测与研究记录"],
+  ["paper", "flask", "模拟炒股", "#paper", "本地与富途模拟账户、委托和持仓"],
   ["documents", "file", "研报资料", "#documents", "导入资料并交给 Agent 分析"],
   ["holdings", "wallet", "我的持仓", "#holdings", "股票、基金与黄金持仓"],
   ["security", "shield", "账户安全", "#security", "身份验证与账户安全设置"],
@@ -157,6 +162,9 @@ const state = {
   railWide: railPrefs.wide,
   railVisible: railPrefs.visible,
   railWidth: railPrefs.width,
+  railVersion: null,
+  railCustomCards: {},
+  railOverrides: {},
   expandedRailCard: null,
   railNotice: null,
   calendarDraft: null,
@@ -165,6 +173,7 @@ const state = {
   sessionImage: null,
   sending: false,
   accountId: null,
+  pendingAccountQuestion: null,
   route: null,
   version: 0,
   controller: null,
@@ -188,6 +197,8 @@ const titles = {
   research: "策略研究",
   documents: "研报资料",
   holdings: "我的持仓",
+  paper: "模拟炒股",
+  live: "实盘交易",
   settings: "数据与模型",
   memory: "投资记忆",
   calendar: "交易日历",
@@ -201,11 +212,10 @@ const canonical = (id) => {
 };
 function route() {
   const aliases = {
-    live: "holdings",
-    accounts: "holdings",
-    account: "holdings",
-    orders: "holdings",
-    trading: "holdings",
+    accounts: "paper",
+    account: "paper",
+    orders: "paper",
+    trading: "paper",
     quotes: "markets",
     market: "markets",
     "ai-research": "chat",
@@ -231,9 +241,9 @@ function navItem(id, glyph, label, href = `#/${id}`) {
 function navMarkup() {
   const more = [
     ["市场研究", ["indices", "news", "liquidity", "flows", "sectors", "gold"]],
-    ["研究工具", ["research", "documents"]],
+    ["研究工具", ["paper", "research", "documents"]],
   ];
-  return `<div class="nav-primary">${navItem("holdings", "wallet", "我的持仓")}${navItem("watchlist", "star", "我的自选")}${navItem("markets", "globe", "市场总览")}</div><details class="nav-more"><summary><span>${icon("grid")}更多工具</span><span class="nav-more-caret">⌄</span></summary>${more.map(([title, ids]) => `<section class="nav-subgroup"><div class="nav-label">${title}</div>${ids.map((id) => {
+  return `<div class="nav-primary">${navItem("holdings", "wallet", "我的持仓")}${navItem("live", "wallet", "实盘交易")}${navItem("watchlist", "star", "我的自选")}${navItem("markets", "globe", "市场总览")}</div><details class="nav-more"><summary><span>${icon("grid")}更多工具</span><span class="nav-more-caret">⌄</span></summary>${more.map(([title, ids]) => `<section class="nav-subgroup"><div class="nav-label">${title}</div>${ids.map((id) => {
     const feature = features.find((x) => x[0] === id);
     const label = id === "liquidity" ? "央行流动性" : feature?.[2] || id;
     return navItem(id, feature?.[1] || "file", label);
@@ -363,8 +373,39 @@ function persistChatSession() {
   const title = $("#active-session-title");
   if (title) title.textContent = session.title;
 }
+let railSaveQueue = Promise.resolve();
 function saveRailPrefs() {
   try { localStorage.setItem(RAIL_KEY, JSON.stringify({ cards: state.railCards, wide: state.railWide, visible: state.railVisible, width: state.railWidth })); } catch (_error) { /* Use current layout for this visit. */ }
+  const identity = getIdentity();
+  if (!identity || state.railVersion === null) return;
+  const data = { cards: [...state.railCards], wide: state.railWide, visible: state.railVisible,
+    expanded_card: state.expandedRailCard,
+    width: state.railWidth, custom_cards: structuredClone(state.railCustomCards), overrides: structuredClone(state.railOverrides) };
+  railSaveQueue = railSaveQueue.then(async () => {
+    if (getIdentity() !== identity) return;
+    try {
+      const saved = await request('/workspace/cards', { method: 'PUT',
+        body: { data, expected_version: state.railVersion } });
+      if (getIdentity() === identity) state.railVersion = saved.version;
+    } catch (error) {
+      if (error.status === 409 && getIdentity() === identity) {
+        const current = await request('/workspace/cards');
+        applyRailState(current);
+        renderUtilityRail();
+        notify('卡片已在其他会话更新，已显示最新版本', 'error');
+      } else notify(`卡片设置保存失败：${error.message}`, 'error');
+    }
+  });
+}
+function applyRailState(data) {
+  state.railCards = data.cards || defaultRail;
+  state.railWide = data.wide === true;
+  state.railVisible = data.visible !== false;
+  state.railWidth = data.width || 320;
+  state.railCustomCards = data.custom_cards || {};
+  state.railOverrides = data.overrides || {};
+  state.expandedRailCard = data.expanded_card || null;
+  state.railVersion = data.version;
 }
 function focusRailCard(id, expanded = true) {
   const featureId = id === "market_clock" ? "clock" : id;
@@ -381,6 +422,7 @@ function focusRailCard(id, expanded = true) {
   }, 5000);
 }
 function utilityCardBody(id) {
+  if (state.railCustomCards[id]) return `<div class="utility-note-body">${markdown(state.railCustomCards[id].body)}</div>`;
   const feature = features.find((item) => item[0] === id);
   if (id === "watchlist") return state.watch.length
     ? `<div class="utility-watch-list">${state.watch.slice(0, 5).map((quote) => `<div class="utility-watch-row"><a href="${stockHref(quote.instrument_id)}"><strong>${esc(quote.name || quote.instrument_id)}</strong><small>${esc(quote.instrument_id)} · ${money(quote.last, quote.currency)}</small></a><span class="mono ${tone(quote.change_percent)}">${percent(quote.change_percent)}</span><button class="utility-watch-remove" data-action="toggle-watch" data-id="${esc(quote.instrument_id)}" aria-label="移除 ${esc(quote.name || quote.instrument_id)}">×</button></div>`).join("")}</div><a class="utility-card-foot" href="#/watchlist">管理 ${state.watch.length} 个自选 →</a>`
@@ -412,12 +454,12 @@ function utilityRailMarkup() {
   const noticeMarkup = state.railNotice
     ? `<div class="rail-notice">${icon("spark")}已更新「${esc(noticeLabel)}」卡片</div>`
     : "";
-  return `<div class="utility-rail-head"><div><span class="eyebrow">AI WORKSPACE</span><h2>工作台卡片</h2><p>拖动排序 · 卡片内容可展开</p></div><div class="utility-rail-head-actions"><button class="icon-button" data-action="manage-rail" aria-label="管理工作台卡片" title="管理卡片">${icon("settings")}</button><button class="icon-button" data-action="hide-rail" aria-label="隐藏工作台卡片栏" title="隐藏卡片栏">${icon("close")}</button></div></div><div class="utility-rail-tools"><button class="button small ghost" data-action="manage-rail">${icon("plus")} 添加 / 管理</button><button class="icon-button" data-action="toggle-rail-width" aria-label="${state.railWide ? "收窄卡片栏" : "加宽卡片栏"}" title="${state.railWide ? "收窄" : "加宽至半屏"}">${icon("arrow")}</button></div>${noticeMarkup}<div class="utility-card-list ${state.expandedRailCard ? "has-expanded" : ""}" id="utility-card-list">${visibleCards.map((id) => {
+  return `<div class="utility-rail-head"><div><span class="eyebrow">AI WORKSPACE</span><h2>工作台卡片</h2><p>拖动排序 · 卡片内容可展开</p></div><div class="utility-rail-head-actions"><button class="icon-button" data-action="manage-rail" aria-label="管理工作台卡片" title="管理卡片">${icon("settings")}</button><button class="icon-button" data-action="hide-rail" aria-label="隐藏工作台卡片栏" title="隐藏卡片栏">${icon("close")}</button></div></div><div class="utility-rail-tools"><button class="button small ghost" data-action="manage-rail">${icon("plus")} 添加 / 管理</button><button class="icon-button" data-action="toggle-rail-width" aria-label="${state.railWide ? "收窄卡片栏" : "加宽至半屏"}" title="${state.railWide ? "收窄" : "加宽至半屏"}">${icon("arrow")}</button></div>${noticeMarkup}<div class="utility-card-list ${state.expandedRailCard ? "has-expanded" : ""}" id="utility-card-list">${visibleCards.map((id) => {
     const feature = features.find((item) => item[0] === id);
-    const cardTitle = id === "clock" ? "市场时钟" : id === "data" ? "数据连接" : feature?.[2] || id;
+    const cardTitle = state.railCustomCards[id]?.title || state.railOverrides[id]?.title || (id === "clock" ? "市场时钟" : id === "data" ? "数据连接" : feature?.[2] || id);
     const cardRoute = id === "clock" ? "#/markets" : id === "data" ? "#/settings" : feature?.[3] || "#/chat";
     const expanded = state.expandedRailCard === id;
-    return `<article class="utility-card ${expanded ? "is-expanded" : ""} ${state.railNotice === id ? "is-notice" : ""}" draggable="true" data-rail-card="${esc(id)}"><header class="utility-card-head"><button class="utility-drag" aria-label="拖动或排序 ${esc(cardTitle)}" title="拖动排序">⠿</button><a href="${cardRoute}" class="utility-card-title">${icon(feature?.[1] || (id === "clock" ? "clock" : "grid"))}<strong>${esc(cardTitle)}</strong></a><button class="icon-button" data-action="move-rail-card" data-id="${esc(id)}" data-direction="up" aria-label="${esc(cardTitle)}上移">↑</button><button class="icon-button" data-action="move-rail-card" data-id="${esc(id)}" data-direction="down" aria-label="${esc(cardTitle)}下移">↓</button><button class="icon-button" data-action="expand-rail-card" data-id="${esc(id)}" aria-label="${expanded ? "收起" : "展开"}${esc(cardTitle)}">${expanded ? "↙" : "⛶"}</button></header><div class="utility-card-body">${utilityCardBody(id)}</div><footer class="utility-card-actions"><a href="${cardRoute}">全页打开 ↗</a><button data-action="hide-rail-card" data-id="${esc(id)}">隐藏</button></footer></article>`;
+    return `<article class="utility-card ${expanded ? "is-expanded" : ""} ${state.railNotice === id ? "is-notice" : ""}" draggable="true" data-rail-card="${esc(id)}"><header class="utility-card-head"><button class="utility-drag" aria-label="拖动或排序 ${esc(cardTitle)}" title="拖动排序">⠿</button><a href="${cardRoute}" class="utility-card-title">${icon(feature?.[1] || (id === "clock" ? "clock" : "grid"))}<strong>${esc(cardTitle)}</strong></a><button class="icon-button" data-action="move-rail-card" data-id="${esc(id)}" data-direction="up" aria-label="${esc(cardTitle)}上移">↑</button><button class="icon-button" data-action="move-rail-card" data-id="${esc(id)}" data-direction="down" aria-label="${esc(cardTitle)}下移">↓</button><button class="icon-button" data-action="expand-rail-card" data-id="${esc(id)}" aria-label="${expanded ? "收起" : "展开"}${esc(cardTitle)}">${expanded ? "↙" : "⛶"}</button></header><div class="utility-card-body">${utilityCardBody(id)}${state.railOverrides[id]?.note ? `<p class="utility-card-note">${esc(state.railOverrides[id].note)}</p>` : ''}</div><footer class="utility-card-actions">${state.railCustomCards[id] ? '' : `<a href="${cardRoute}">全页打开 ↗</a>`}<button data-action="hide-rail-card" data-id="${esc(id)}">隐藏</button></footer></article>`;
   }).join("") || '<div class="utility-empty utility-empty-rail"><p>右栏还没有卡片</p><button class="button small" data-action="manage-rail">添加一个功能卡片</button></div>'}</div>`;
 }
 function renderUtilityRail() {
@@ -439,13 +481,14 @@ function renderUtilityRail() {
   if (dialogContent && $("#utility-dialog").open) dialogContent.innerHTML = utilityRailMarkup();
 }
 function manageRail() {
-  const options = [...features.map((feature) => ({ id: feature[0], title: feature[2], glyph: feature[1], description: feature[4] })), { id: "clock", title: "市场时钟", glyph: "clock", description: "A 股、港股和美股交易状态" }, { id: "data", title: "数据连接", glyph: "settings", description: "数据源缓存与可用情况" }];
+  const options = [...features.map((feature) => ({ id: feature[0], title: feature[2], glyph: feature[1], description: feature[4] })), { id: "clock", title: "市场时钟", glyph: "clock", description: "A 股、港股和美股交易状态" }, { id: "data", title: "数据连接", glyph: "settings", description: "数据源缓存与可用情况" }, ...Object.entries(state.railCustomCards).map(([id, card]) => ({ id, title: card.title, glyph: 'file', description: '自定义笔记卡片' }))];
   showDialog("管理工作台卡片", `<p>勾选显示在右侧栏的卡片；拖动右侧卡片或用方向按钮调整顺序。点击卡片标题可打开完整功能页。</p><div class="rail-manager-list">${options.map((item) => `<label class="rail-manager-option"><input type="checkbox" data-rail-select="${esc(item.id)}" ${state.railCards.includes(item.id) ? "checked" : ""}><span>${icon(item.glyph)}</span><span><strong>${esc(item.title)}</strong><small>${esc(item.description)}</small></span></label>`).join("")}</div>`, `<button class="button" data-action="close-dialog">取消</button><button class="button primary" data-action="save-rail">保存卡片</button>`);
 }
 async function refreshShell() {
   if (!getIdentity() || getIdentity().setup_required) return [];
   const requestedIdentity = getIdentity();
   const jobs = [
+    ["railState", "/workspace/cards"],
     ["watch", "/watchlist"],
     ["sessions", "/markets/status"],
     ["providers", "/providers"],
@@ -457,11 +500,29 @@ async function refreshShell() {
   const results = await Promise.allSettled(
     jobs.map(async ([key, path]) => {
       const data = await request(path, { timeout: 12000 });
-      if (getIdentity() === requestedIdentity)
-        state[key] = key === "sessions" ? data.markets : data;
+      if (getIdentity() === requestedIdentity) {
+        if (key === "railState") {
+          let current = data;
+          const owner = requestedIdentity.user?.user_id || requestedIdentity.user?.id || requestedIdentity.user?.username;
+          if (data.version === 0 && localStorage.getItem(RAIL_KEY) && !localStorage.getItem(RAIL_MIGRATION_KEY)) {
+            try {
+              const legacy = readRailPrefs();
+              current = await request('/workspace/cards', { method: 'PUT', body: {
+                data: { ...legacy, custom_cards: {}, overrides: {}, expanded_card: null }, expected_version: 0 } });
+              if (owner) localStorage.setItem(RAIL_MIGRATION_KEY, owner);
+            } catch (error) {
+              if (error.status === 409) current = await request('/workspace/cards');
+              else throw error;
+            }
+          }
+          if (getIdentity() === requestedIdentity) applyRailState(current);
+        }
+        else state[key] = key === "sessions" ? data.markets : data;
+      }
     }),
   );
   if (getIdentity() !== requestedIdentity) return results;
+  await loadCalendarState(true);
   rebuildChatSessions();
   renderSidebar();
   renderUtilityRail();
@@ -602,9 +663,40 @@ function userImageMarkup(message) {
   if (!source) return message.imageAttached ? '<span class="chat-image-label">已粘贴图片</span>' : '';
   return `<figure class="chat-image-figure"><img class="chat-message-image" src="${esc(source)}" alt="${esc(message.imageName || '对话图片')}" /><figcaption>${esc(message.imageName || '已解析图片')}${message.imageSize ? ` · ${Math.ceil(message.imageSize / 1024)} KB` : ''}${message.imageHash ? ` · SHA-256 ${esc(message.imageHash.slice(0, 12))}…` : ''}</figcaption></figure>`;
 }
+const researchToolLabels = {
+  get_account_snapshot: '真实持仓', get_watchlist: '自选清单', get_market_news: '财经快讯',
+  get_macro_liquidity: '央行流动性', get_sector_rotation: '行业轮动',
+  get_market_overview: '市场概览', get_index_analysis: '指数趋势',
+  get_instrument_research: '标的行情', get_stock_dossier: '公司资料',
+  get_investment_memory: '投资记忆', get_memory_entry: '记忆条目',
+  get_sector_overview: '行业数据', get_market_flow_history: '资金分类',
+  get_fund_holdings: '基金披露持仓', get_stock_financials: '财务数据',
+};
+function researchToolsMarkup(message) {
+  const tools = message.progressTools || [];
+  const working = tools.some((tool) => tool.state === 'running');
+  return tools.length ? `<details class="research-tools" ${message.toolsExpanded ? 'open' : ''}><summary>研究过程 · ${tools.length} 次数据调用${working ? ' · 查询中' : ''}</summary><ol>${tools.map((tool) => `<li><span class="research-tool-state ${tool.state}"></span><span>${esc(researchToolLabels[tool.name] || tool.name)}</span><small>${tool.state === 'running' ? '查询中' : tool.state === 'error' ? '未取得数据' : '已返回'}</small></li>`).join('')}</ol></details>` : '';
+}
+function researchProgressMarkup(message) {
+  return `<div class="research-progress"><div class="pending-line" role="status"><span class="spinner" aria-hidden="true"></span>${esc(message.progressStatus || '正在准备研究…')}</div>${researchToolsMarkup(message)}${message.streamText ? `<div class="stream-answer" aria-label="正在生成回答">${esc(message.streamText)}</div>` : ''}</div>`;
+}
 function messageMarkup(m, i) {
   const isUser = m.role === "user";
-  return `<article class="message ${isUser ? "user" : "assistant"}" data-message="${i}"><header class="message-meta"><span class="message-avatar ${isUser ? "" : "agent"}">${isUser ? "我" : icon("spark")}</span><strong>${isUser ? "你" : "Finch"}</strong>${m.model ? `<span class="muted">${esc(m.model)}</span>` : ""}<time>${time(m.created_at)}</time></header><div class="message-content">${m.pending ? '<div class="pending-line" role="status"><span class="spinner"></span>正在调取数据，整理研究证据…</div>' : m.error ? `<div class="alert error" role="alert">${esc(m.error)}<br>${m.question ? `<button class="button small ghost" data-action="retry-chat" data-index="${i}">重新发送</button>` : ''} <a class="text-link" href="#/settings">查看模型与数据状态</a></div>` : isUser ? `${userImageMarkup(m)}${esc(m.content)}` : `${m.cards?.length ? `<section class="answer-components" aria-label="行情与工具数据"><div class="answer-components-title">行情与工具数据 <span>来自本次回答调用的数据</span></div><div class="result-cards">${resultCards(m.cards)}</div></section>` : ""}${markdown(m.content)}`}</div>${!isUser && !m.pending && !m.error ? `<footer class="message-actions"><button data-action="copy-message" data-index="${i}">${icon("copy")}复制</button><button data-action="all-evidence" data-index="${i}">${icon("link")}${m.evidence?.length || 0} 条数据证据</button>${m.calendarDraft ? `<button class="calendar-ai-save" data-action="calendar-add-ai" data-index="${i}" data-date="${esc(m.calendarDraft.date)}" data-category="${esc(m.calendarDraft.category)}">加入 ${esc(m.calendarDraft.date)} 日历</button>` : ""}<span>${m.tool_calls || 0} 次工具调用</span></footer>` : ""}</article>`;
+  const cards = m.cards?.length ? `<section class="answer-components" aria-label="行情与工具数据"><div class="answer-components-title">行情与工具数据 <span>来自本次回答调用的数据</span></div><div class="result-cards">${resultCards(m.cards)}</div></section>` : '';
+  const error = `<div class="alert error" role="alert">${esc(m.error)}<br>${m.question ? `<button class="button small ghost" data-action="retry-chat" data-index="${i}">重新发送</button>` : ''} <a class="text-link" href="#/settings">查看模型与数据状态</a></div>`;
+  const body = m.pending ? researchProgressMarkup(m) : m.error ? error : isUser ? `${userImageMarkup(m)}${esc(m.content)}` : `${researchToolsMarkup(m)}${cards}${markdown(m.content)}`;
+  const footer = !isUser && !m.pending && !m.error ? `<footer class="message-actions"><button data-action="copy-message" data-index="${i}">${icon("copy")}复制</button><button data-action="all-evidence" data-index="${i}">${icon("link")}${m.evidence?.length || 0} 条数据证据</button>${m.calendarDraft ? `<button class="calendar-ai-save" data-action="calendar-add-ai" data-index="${i}" data-date="${esc(m.calendarDraft.date)}" data-category="${esc(m.calendarDraft.category)}">加入 ${esc(m.calendarDraft.date)} 日历</button>` : ""}<span>${m.tool_calls || 0} 次工具调用</span></footer>` : '';
+  return `<article class="message ${isUser ? "user" : "assistant"}" data-message="${i}"><header class="message-meta"><span class="message-avatar ${isUser ? "" : "agent"}">${isUser ? "我" : icon("spark")}</span><strong>${isUser ? "你" : "Finch"}</strong>${m.model ? `<span class="muted">${esc(m.model)}</span>` : ""}<time>${time(m.created_at)}</time></header><div class="message-content">${body}</div>${footer}</article>`;
+}
+function updateStreamingBubble(message) {
+  const scroll = $('#messages');
+  const article = document.querySelector(`[data-message="${state.messages.indexOf(message)}"]`);
+  if (!scroll || !article) return;
+  const nearBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 100;
+  const disclosure = article.querySelector('.research-tools');
+  if (disclosure) message.toolsExpanded = disclosure.open;
+  article.querySelector('.message-content').innerHTML = researchProgressMarkup(message);
+  if (nearBottom) scroll.scrollTop = scroll.scrollHeight;
 }
 function updateMessages(follow = true) {
   const el = $("#messages-inner");
@@ -621,7 +713,7 @@ function updateMessages(follow = true) {
 }
 function renderChat() {
   setPage(
-    `<div class="chat-layout"><section class="conversation" aria-label="AI 投研对话"><header class="chat-heading"><span><span class="agent-spark">${icon("spark")}</span><strong id="page-title">AI 投研</strong> <span class="muted">/ <span id="active-session-title">${esc(state.chatSessions.find((item) => item.id === state.activeChatId)?.title || "当前会话")}</span></span></span><a class="button small ghost chat-memory-link" href="#/memory">${icon("file")} 投资记忆</a><button class="button small" data-action="ask" data-question="请综合今天的新闻、流动性、大盘、行业轮动和我的自选，给出今日操作建议：逐只明确买入、加仓、持有、减仓、卖出或观望；注明数据时点、触发条件、失效条件和缺口。先查询实际数据，缺数据时建议暂不操作。">今日操作建议</button><button class="icon-button" data-action="new-chat" aria-label="新建 AI 投研会话" ${state.sending ? "disabled" : ""}>${icon("plus")}</button></header><div class="messages" id="messages" aria-label="对话记录"><div class="messages-inner" id="messages-inner"></div></div><div class="composer-wrap"><div class="model-note" id="model-note">${modelNote()}</div><form id="chat-form" class="composer" novalidate><label class="sr-only" for="chat-input">向 Finch 提问</label><div id="chat-image-preview" class="chat-image-preview" aria-live="polite">${pastedImageMarkup()}</div><textarea id="chat-input" class="resize-none" name="question" rows="2" placeholder="问一只股票、一个板块，或交给 Finch 一份材料…" maxlength="4000">${esc(state.draft)}</textarea><div class="composer-footer"><a class="icon-button" href="#/documents" aria-label="上传研报或财报">${icon("paperclip")}</a><button class="icon-button" type="button" data-action="skill-zip-chat" aria-label="安装 Skill ZIP" title="安装 Skill ZIP">${icon("plus")}</button><input class="sr-only" id="chat-skill-zip" type="file" accept=".zip,application/zip" aria-label="选择 Skill ZIP" /><button class="icon-button ${state.accountId ? "positive" : ""}" type="button" data-action="account-context" aria-label="选择本次对话的账户上下文">${icon("wallet")}</button><span class="hint" id="chat-vision-hint">${state.accountId ? "本次允许读取指定账户" : state.status?.supports_vision ? "粘贴图片 · Enter 发送" : "Enter 发送 · Shift + Enter 换行"}</span><button class="send-button" id="send-button" aria-label="发送研究问题" ${state.sending ? "disabled" : ""}>${state.sending ? '<span class="spinner"></span>' : icon("up")}</button></div></form></div></section></div>`,
+    `<div class="chat-layout"><section class="conversation" aria-label="AI 投研对话"><header class="chat-heading"><span><span class="agent-spark">${icon("spark")}</span><strong id="page-title">AI 投研</strong> <span class="muted">/ <span id="active-session-title">${esc(state.chatSessions.find((item) => item.id === state.activeChatId)?.title || "当前会话")}</span></span></span><a class="button small ghost chat-memory-link" href="#/memory">${icon("file")} 投资记忆</a><button class="button small" data-action="daily-advice">持仓操作建议</button><button class="icon-button" data-action="new-chat" aria-label="新建 AI 投研会话" ${state.sending ? "disabled" : ""}>${icon("plus")}</button></header><div class="messages" id="messages" aria-label="对话记录"><div class="messages-inner" id="messages-inner"></div></div><div class="composer-wrap"><div class="model-note" id="model-note">${modelNote()}</div><form id="chat-form" class="composer" novalidate><label class="sr-only" for="chat-input">向 Finch 提问</label><div id="chat-image-preview" class="chat-image-preview" aria-live="polite">${pastedImageMarkup()}</div><textarea id="chat-input" class="resize-none" name="question" rows="2" placeholder="问一只股票、一个板块，或交给 Finch 一份材料…" maxlength="4000">${esc(state.draft)}</textarea><div class="composer-footer"><a class="icon-button" href="#/documents" aria-label="上传研报或财报">${icon("paperclip")}</a><button class="icon-button" type="button" data-action="skill-zip-chat" aria-label="安装 Skill ZIP" title="安装 Skill ZIP">${icon("plus")}</button><input class="sr-only" id="chat-skill-zip" type="file" accept=".zip,application/zip" aria-label="选择 Skill ZIP" /><button class="icon-button ${state.accountId ? "positive" : ""}" type="button" data-action="account-context" aria-label="选择本次对话的账户上下文">${icon("wallet")}</button><span class="hint" id="chat-vision-hint">${state.accountId ? "本次允许读取指定账户" : state.status?.supports_vision ? "粘贴图片 · Enter 发送" : "Enter 发送 · Shift + Enter 换行"}</span><button class="send-button" id="send-button" aria-label="发送研究问题" ${state.sending ? "disabled" : ""}>${state.sending ? '<span class="spinner"></span>' : icon("up")}</button></div></form></div></section></div>`,
   );
   updateMessages(false);
   $("#chat-input").addEventListener("input", (e) => {
@@ -669,6 +761,9 @@ async function sendChat(question = state.draft, reuseImageId = null) {
   const pending = {
     role: "assistant",
     pending: true,
+    progressStatus: '正在准备研究…',
+    progressTools: [],
+    streamText: '',
     created_at: new Date().toISOString(),
     question: management ? null : question,
     management,
@@ -676,6 +771,7 @@ async function sendChat(question = state.draft, reuseImageId = null) {
   };
   state.calendarDraft = null;
   state.messages.push(pending);
+  let paintTimer = null;
   state.sending = true;
   state.draft = "";
   state.pastedImage = null;
@@ -739,11 +835,36 @@ async function sendChat(question = state.draft, reuseImageId = null) {
     if (state.accountId) body.account_id = state.accountId;
     if (uploaded) body.image_id = uploaded.image_id;
     else if (pastedImage) body.image_data_url = pastedImage.dataUrl;
-    const result = await request("/ai/research", {
-      method: "POST",
-      body,
-      timeout: 190000,
-    });
+    let result = null;
+    const paint = () => {
+      if (paintTimer !== null) return;
+      paintTimer = setTimeout(() => {
+        paintTimer = null;
+        updateStreamingBubble(pending);
+      }, 70);
+    };
+    await requestEvents('/ai/research/stream', { body, timeout: 190000, onEvent: (event) => {
+      if (event.type === 'error') throw new Error(event.message || '研究运行失败');
+      if (event.type === 'done') { result = event.result; return; }
+      if (event.type === 'run') pending.run_id = event.run_id;
+      if (event.type === 'status') pending.progressStatus = event.message;
+      if (event.type === 'tool_start') {
+        pending.progressTools.push({ name: event.name, state: 'running' });
+        pending.progressStatus = '正在核对数据来源';
+      }
+      if (event.type === 'tool_end') {
+        const item = [...pending.progressTools].reverse().find((tool) => tool.name === event.name && tool.state === 'running');
+        if (item) item.state = event.ok ? 'done' : 'error';
+      }
+      if (event.type === 'answer_reset') pending.streamText = '';
+      if (event.type === 'answer_delta') {
+        pending.streamText += event.text || '';
+        pending.progressStatus = '正在撰写回答';
+      }
+      paint();
+    } });
+    if (!result) throw new Error('连接提前结束，研究结果尚未返回。');
+    if (paintTimer !== null) { clearTimeout(paintTimer); paintTimer = null; }
     if (result.display_question) userMessage.content = result.display_question;
     if (result.session_id) state.activeChatId = result.session_id;
     state.memoryStatus = result.memory_status || "ready";
@@ -756,10 +877,15 @@ async function sendChat(question = state.draft, reuseImageId = null) {
       tool_calls: result.tool_calls,
       run_id: result.run_id,
     });
+    delete pending.streamText;
+    delete pending.progressStatus;
     refreshShell();
   } catch (error) {
     Object.assign(pending, { pending: false, error: error.message, question: management ? null : question });
+    delete pending.streamText;
+    delete pending.progressStatus;
   } finally {
+    if (paintTimer !== null) clearTimeout(paintTimer);
     state.sending = false;
     if (!management) persistChatSession();
     updateMessages(false);
@@ -1019,8 +1145,9 @@ async function renderSectors(r, signal) {
       provider: d.source,
       received_at: d.received_at,
     }));
-    const net = flow["今日主力净流入-净额"] ?? flow["主力净流入-净额"];
-    content = `<div class="stat-grid section-gap">${stat("板块涨跌幅", `<span class="${tone(summary["涨跌幅"])}">${percent(summary["涨跌幅"])}</span>`, "板块原始统计")}${stat("上涨 / 下跌", `${number(summary["上涨家数"], 0)} / ${number(summary["下跌家数"], 0)}`, "来源返回值")}${stat("行业主力净流入", money(net, "CNY"), "来源成交分类统计 · 非北向资金")}${stat("成分股", number(rows.length, 0), "本次取得的成分股数量")}</div>${panel("行业资金口径", `<div class="panel-body"><p class="field-help">${esc(d.flow_note)}</p>${d.flow ? `<details class="section-gap"><summary>查看来源资金字段</summary><pre class="code-data">${esc(JSON.stringify(d.flow, null, 2))}</pre></details>` : '<p class="field-help">当前没有取得这个板块的资金数值，暂不作资金趋势判断。</p>'}</div>`)}<div class="section-gap">${panel("成分股行情", quoteTable(rows.slice(0, 50)), rows.length > 50 ? "仅展示前 50 个成分股；每只证券可进入个股详情。" : "点击证券名称打开详情")}</div>`;
+    const thsFlow = d.component_sources?.flow === "同花顺";
+    const net = thsFlow ? flow["资金净额-元"] : flow["今日主力净流入-净额"] ?? flow["主力净流入-净额"];
+    content = `<div class="stat-grid section-gap">${stat("板块涨跌幅", `<span class="${tone(summary["涨跌幅"])}">${percent(summary["涨跌幅"])}</span>`, "板块原始统计")}${stat("上涨 / 下跌", `${number(summary["上涨家数"], 0)} / ${number(summary["下跌家数"], 0)}`, "来源返回值")}${stat(thsFlow ? "行业资金净额" : "行业主力净流入", money(net, "CNY"), thsFlow ? "同花顺口径 · 非北向资金" : "来源成交分类统计 · 非北向资金")}${stat("成分股", number(rows.length, 0), "本次取得的成分股数量")}</div>${panel("行业资金口径", `<div class="panel-body"><p class="field-help">${esc(d.flow_note)}</p>${d.flow ? `<details class="section-gap"><summary>查看来源资金字段</summary><pre class="code-data">${esc(JSON.stringify(d.flow, null, 2))}</pre></details>` : '<p class="field-help">当前没有取得这个板块的资金数值，暂不作资金趋势判断。</p>'}</div>`)}<div class="section-gap">${panel("成分股行情", quoteTable(rows.slice(0, 50)), rows.length > 50 ? "仅展示前 50 个成分股；每只证券可进入个股详情。" : "点击证券名称打开详情")}</div>`;
   } else {
     const catalog = d.sectors.length
       ? `<div class="sector-list section-gap">${d.sectors.map((s) => `<a class="sector-tile" href="${sectorHref(s["板块名称"])}"><div class="sector-top"><h3>${esc(s["板块名称"])}</h3><span class="mono ${tone(s["涨跌幅"])}">${percent(s["涨跌幅"])}</span></div><p>${number(s["上涨家数"], 0)} 家上涨 / ${number(s["下跌家数"], 0)} 家下跌</p></a>`).join("")}</div>`
@@ -1110,6 +1237,7 @@ function paperUI() {
   };
 }
 async function renderTrading(r, signal) {
+  if (r.params.get("source") === "futu") return renderFutuPaper(r, signal, paperUI());
   return r.params.get("tab") === "orders"
     ? renderPaperOrders(r, signal, paperUI())
     : renderPaperAccounts(r, signal, paperUI());
@@ -1137,7 +1265,7 @@ async function renderSettings(_route, signal = state.controller?.signal) {
   setPage(
     page(
       heading("数据与模型", "查看 Agent 配置与市场数据源的实际连接状态。") +
-        `<div class="split">${panel("研究模型", `<div class="panel-body"><span class="tag ${s.enabled ? "ready" : "amber"}">${s.enabled ? "配置与运行时就绪" : s.configuration_state === "invalid" ? "配置无效" : "等待配置"}</span><h2 class="section-gap">${esc(s.primary_model || "连接你的 AI 模型")}</h2><p class="field-help section-gap">在项目根目录 .env 配置模型服务，然后重启本地服务。密钥只保留在服务端。</p><pre class="code-data section-gap">MODEL_CONFIG_JSON='[{"provider":"openai","model":"你的模型名","base_url":"https://你的服务/v1","api_key_env":"AI_MODEL_API_KEY"}]'\nPRIMARY_MODEL=你的模型名\nAI_MODEL_API_KEY=你的密钥</pre><p class="field-help section-gap">模型需支持工具调用。Agent 可查行情、指标、行业板块、财务摘要、基金披露、资料与回测。</p></div>`)}${panel("工作空间", `<div class="panel-body">${metric("运行方式", "本地单用户")}${metric("资产记录", "真实持仓账本")}${metric("网页交易", "未开放")}${metric("资料存储", "本机 MySQL")}<p class="field-help section-gap">公共数据源可能延迟或失效。你可以继续查看缓存数据，界面会保留来源和时间。</p></div>`)}</div><div class="section-gap">${panel("市场视图配色", `<div class="panel-body"><p class="field-help">A股视图采用 Lobster 深蓝底与珊瑚红强调，红涨绿跌；美股视图采用 OG 石板灰底与柔绿交互色，绿涨红跌。持仓盈亏和收益率随视图着色，错误提示保持警示色。选择保存在本机浏览器。</p><div class="palette-options section-gap" role="group" aria-label="市场视图配色"><button type="button" class="palette-option" data-action="set-market-palette" data-palette="cn" aria-pressed="${marketPalette === "cn"}"><span class="palette-example" aria-hidden="true"><i></i><i></i></span>A股视图 · Lobster · 红涨绿跌</button><button type="button" class="palette-option" data-action="set-market-palette" data-palette="us" aria-pressed="${marketPalette === "us"}"><span class="palette-example" aria-hidden="true"><i></i><i></i></span>美股视图 · OG · 绿涨红跌</button></div></div>`)}</div><div class="section-gap">${panel("富途行情 · 本机 OpenD", `<div class="panel-body"><span id="futu-state" class="tag ${futu?.connected ? "accent" : "amber"}">${esc(futuState)}</span><p id="futu-detail" class="field-help section-gap">${futu?.connected ? `最近收到 ${number(futu.last_quote_count, 0)} 条行情 · ${time(futu.last_success)}` : esc(futu?.last_error || '尚未收到富途行情')}</p><p class="field-help section-gap">启动项目时会自动拉起富途 OpenD。点击下方按钮可切换到富途官方登录窗口；完成登录后返回本页查看行情状态。</p><p id="futu-port" class="field-help section-gap">本机 API 端口 127.0.0.1:${number(futu?.opend_port || 11111, 0)} · ${futu?.opend_reachable ? "已监听" : "未监听"}</p><p class="field-help">网页不接收富途密码、验证码或交易密码；当前仅连接行情接口，不执行交易。</p>${futu?.market_errors && Object.keys(futu.market_errors).length ? `<p class="field-help section-gap">市场状态：${Object.entries(futu.market_errors).map(([m,e]) => esc(m + ' ' + e)).join('；')}</p>` : ''}<div class="actions section-gap"><button class="button small primary" data-action="open-futu-login" ${futu?.enabled ? "" : "disabled"}>打开富途 OpenD 登录窗口</button><button class="button small" data-action="refresh-futu-status">刷新连接状态</button><a class="text-link" href="https://openapi.futunn.com/futu-api-doc/quick/opend-base.html" target="_blank" rel="noopener noreferrer">官方安装说明 ↗</a></div></div>`)}</div><div class="section-gap">${panel("市场数据源", `<div class="panel-body provider-list">${state.providers.map((p) => `<article class="provider-item"><div><strong>${esc(p.market_name)}</strong><span class="tag ${p.state === "connected" ? "accent" : "amber"}">${esc({ connected: "已拉取", partial: "部分可用", stale: "缓存过期", error: "连接异常", refreshing: "请求中", waiting: "等待" }[p.state] || p.state)}</span></div><p>${esc(p.provider)} · ${esc(p.endpoint)} · ${number(p.quote_count, 0)} 条记录</p><p>最近接收 ${time(p.last_success)}</p>${p.last_error ? `<details class="section-gap"><summary>查看错误详情</summary><p>${esc(p.last_error)}</p></details>` : ""}<button class="button small section-gap" data-action="refresh-market" data-market="${esc(p.market)}">重新请求</button></article>`).join("")}</div>`)}</div>`,
+        `<div class="split">${panel("研究模型", `<div class="panel-body"><span class="tag ${s.enabled ? "ready" : "amber"}">${s.enabled ? "配置与运行时就绪" : s.configuration_state === "invalid" ? "配置无效" : "等待配置"}</span><h2 class="section-gap">${esc(s.primary_model || "连接你的 AI 模型")}</h2><p class="field-help section-gap">在项目根目录 .env 配置模型服务，然后重启本地服务。密钥只保留在服务端。</p><pre class="code-data section-gap">MODEL_CONFIG_JSON='[{"provider":"openai","model":"你的模型名","base_url":"https://你的服务/v1","api_key_env":"AI_MODEL_API_KEY"}]'\nPRIMARY_MODEL=你的模型名\nAI_MODEL_API_KEY=你的密钥</pre><p class="field-help section-gap">模型需支持工具调用。Agent 可查行情、指标、行业板块、财务摘要、基金披露、资料与回测。</p></div>`)}${panel("工作空间", `<div class="panel-body">${metric("运行方式", "本地单用户")}${metric("资产记录", "真实持仓账本")}${metric("网页交易", "富途接入 · 默认关闭实盘发送")}${metric("资料存储", "本机 MySQL")}<p class="field-help section-gap">公共数据源可能延迟或失效。你可以继续查看缓存数据，界面会保留来源和时间。</p></div>`)}</div><div class="section-gap">${panel("市场视图配色", `<div class="panel-body"><p class="field-help">A股视图采用 Lobster 深蓝底与珊瑚红强调，红涨绿跌；美股视图采用 OG 石板灰底与柔绿交互色，绿涨红跌。持仓盈亏和收益率随视图着色，错误提示保持警示色。选择保存在本机浏览器。</p><div class="palette-options section-gap" role="group" aria-label="市场视图配色"><button type="button" class="palette-option" data-action="set-market-palette" data-palette="cn" aria-pressed="${marketPalette === "cn"}"><span class="palette-example" aria-hidden="true"><i></i><i></i></span>A股视图 · Lobster · 红涨绿跌</button><button type="button" class="palette-option" data-action="set-market-palette" data-palette="us" aria-pressed="${marketPalette === "us"}"><span class="palette-example" aria-hidden="true"><i></i><i></i></span>美股视图 · OG · 绿涨红跌</button></div></div>`)}</div><div class="section-gap">${panel("富途行情 · 本机 OpenD", `<div class="panel-body"><span id="futu-state" class="tag ${futu?.connected ? "accent" : "amber"}">${esc(futuState)}</span><p id="futu-detail" class="field-help section-gap">${futu?.connected ? `最近收到 ${number(futu.last_quote_count, 0)} 条行情 · ${time(futu.last_success)}` : esc(futu?.last_error || '尚未收到富途行情')}</p><p class="field-help section-gap">启动项目时会自动拉起富途 OpenD。点击下方按钮可切换到富途官方登录窗口；完成登录后返回本页查看行情状态。</p><p id="futu-port" class="field-help section-gap">本机 API 端口 127.0.0.1:${number(futu?.opend_port || 11111, 0)} · ${futu?.opend_reachable ? "已监听" : "未监听"}</p><p class="field-help">网页不接收富途密码、验证码或交易密码；交易账户发现与行情分开配置，实盘发送默认关闭。</p>${futu?.market_errors && Object.keys(futu.market_errors).length ? `<p class="field-help section-gap">市场状态：${Object.entries(futu.market_errors).map(([m,e]) => esc(m + ' ' + e)).join('；')}</p>` : ''}<div class="actions section-gap"><button class="button small primary" data-action="open-futu-login" ${futu?.enabled ? "" : "disabled"}>打开富途 OpenD 登录窗口</button><button class="button small" data-action="refresh-futu-status">刷新连接状态</button><a class="text-link" href="https://openapi.futunn.com/futu-api-doc/quick/opend-base.html" target="_blank" rel="noopener noreferrer">官方安装说明 ↗</a></div></div>`)}</div><div class="section-gap">${panel("市场数据源", `<div class="panel-body provider-list">${state.providers.map((p) => `<article class="provider-item"><div><strong>${esc(p.market_name)}</strong><span class="tag ${p.state === "connected" ? "accent" : "amber"}">${esc({ connected: "已拉取", partial: "部分可用", stale: "缓存过期", error: "连接异常", refreshing: "请求中", waiting: "等待" }[p.state] || p.state)}</span></div><p>${esc(p.provider)} · ${esc(p.endpoint)} · ${number(p.quote_count, 0)} 条记录</p><p>最近接收 ${time(p.last_success)}</p>${p.last_error ? `<details class="section-gap"><summary>查看错误详情</summary><p>${esc(p.last_error)}</p></details>` : ""}<button class="button small section-gap" data-action="refresh-market" data-market="${esc(p.market)}">重新请求</button></article>`).join("")}</div>`)}</div>`,
     ),
   );
   const content = document.querySelector('#page .content-page');
@@ -1170,8 +1298,10 @@ async function renderSettings(_route, signal = state.controller?.signal) {
 }
 async function renderRoute() {
   if (!getIdentity() || getIdentity().setup_required) return;
-  if (["/trading", "/accounts", "/account", "/orders", "/live"].includes((location.hash.slice(1) || '').split('?')[0])) {
-    history.replaceState(null, '', '#/holdings');
+  const legacy = (location.hash.slice(1) || '').split('?')[0];
+  if (["/trading", "/accounts", "/account", "/orders"].includes(legacy)) {
+    const query = location.hash.includes('?') ? location.hash.slice(location.hash.indexOf('?')) : '';
+    history.replaceState(null, '', '#/paper' + (legacy === '/orders' ? (query ? query + '&tab=orders' : '?tab=orders') : query));
   }
   const r = route();
   const samePage = state.route?.name === r.name && r.name !== "chat";
@@ -1275,6 +1405,8 @@ async function renderRoute() {
       documents: renderDocuments,
       research: renderResearch,
       holdings: (r, signal) => renderHoldings(r, signal, { setPage, page, heading }),
+      paper: renderTrading,
+      live: (r, signal) => renderLive(r, signal, paperUI()),
       settings: renderSettings,
       memory: (r, signal) => renderWikiPage(r, signal, { setPage, page, heading }),
       security: async (r, signal) => {
@@ -1359,6 +1491,8 @@ document.addEventListener("submit", async (e) => {
     if (form.id === "paper-ai-form") focusRailCard("trading");
     return;
   }
+  if (await handleFutuPaperSubmit(form, values, paperUI())) return;
+  if (await handleLiveSubmit(form, values, paperUI())) return;
   if (await handleResearchSubmit(form, values, paperUI())) return;
   if (await handleContextSubmit(form, values)) return;
   if (form.id === "global-search") {
@@ -1707,6 +1841,8 @@ document.addEventListener("click", async (e) => {
     if (["paper-run-detail", "paper-refresh-runs", "paper-stop"].includes(action)) focusRailCard("trading");
     return;
   }
+  if (await handleFutuPaperAction(button, paperUI())) return;
+  if (await handleLiveAction(button, paperUI())) return;
   if (await handleResearchAction(button, paperUI())) return;
   if (await handleCalendarAction(button)) return;
   if (await handleContextAction(button, paperUI())) return;
@@ -1833,6 +1969,7 @@ document.addEventListener("click", async (e) => {
   }
   if (action === "expand-rail-card") {
     state.expandedRailCard = state.expandedRailCard === id ? null : id;
+    saveRailPrefs();
     renderUtilityRail();
     return;
   }
@@ -1887,6 +2024,7 @@ document.addEventListener("click", async (e) => {
     state.pastedImage = null;
     state.sessionImage = null;
     state.accountId = null;
+    state.pendingAccountQuestion = null;
     state.activeChatId = null;
     if (state.route.name === "chat") renderChat();
     else location.hash = "/chat";
@@ -2013,17 +2151,43 @@ document.addEventListener("click", async (e) => {
     return;
   }
   if (action === "account-context") {
+    state.pendingAccountQuestion = null;
+  }
+  if (action === "daily-advice") {
+    state.pendingAccountQuestion = "请读取我本轮选择的真实持仓账户，结合最新新闻、流动性、大盘、行业与各持仓标的行情，逐只给出今天的操作建议。请区分实际持仓与自选，并结合已登记数量、成本和币种说明仓位风险；逐项注明数据时点、触发条件、失效条件和缺口，缺少关键数据时建议暂不操作。";
+    if (state.accountId?.startsWith('personal-')) {
+      ask(state.pendingAccountQuestion);
+      state.pendingAccountQuestion = null;
+      return;
+    }
+  }
+  if (action === "account-context" || action === "daily-advice") {
+    try {
+      state.accounts = await request("/accounts", { timeout: 12000 });
+    } catch (failure) {
+      notify(failure.message || "账户列表暂时无法读取");
+      return;
+    }
+    const personalAccounts = state.accounts.filter((a) => a.mode === 'personal');
     showDialog(
       "账户研究上下文",
-      `<p>开启后，当前对话的后续请求可把所选真实账户的币种、现金、持仓和盈亏发送给配置的模型。</p><label class="field-label section-gap" for="context-account">选择账户</label><select id="context-account" class="field"><option value="">不读取账户</option>${state.accounts.filter((a) => a.mode !== 'paper').map((a) => `<option value="${esc(a.account_id)}" ${state.accountId === a.account_id ? "selected" : ""}>${esc(a.label)} · ${esc(a.currency)}</option>`).join("")}</select>`,
-      `<button class="button primary" data-action="save-account-context">保存选择</button>`,
+      `<p>选择“我的持仓”账户后，当前对话的后续请求会把该账户的币种、现金、持仓和盈亏发送给配置的模型。</p>${personalAccounts.length ? `<label class="field-label section-gap" for="context-account">选择账户</label><select id="context-account" class="field"><option value="">不读取账户</option>${personalAccounts.map((a) => `<option value="${esc(a.account_id)}" ${state.accountId === a.account_id ? "selected" : ""}>${esc(a.label)} · ${esc(a.currency)} · ${a.positions?.length || 0} 条持仓</option>`).join("")}</select>` : `<p class="field-help section-gap">尚未登记真实持仓。请先在 <a href="#/holdings">我的持仓</a> 保存账户数据。</p>`}`,
+      personalAccounts.length ? `<button class="button primary" data-action="save-account-context">${state.pendingAccountQuestion ? "选择并准备分析" : "保存选择"}</button>` : '',
     );
     return;
   }
   if (action === "save-account-context") {
-    state.accountId = $("#context-account").value || null;
+    const selected = $("#context-account").value || null;
+    if (state.pendingAccountQuestion && !selected) {
+      notify("请先选择一个已登记的持仓账户");
+      return;
+    }
+    state.accountId = selected;
+    const pendingQuestion = state.pendingAccountQuestion;
+    state.pendingAccountQuestion = null;
     $("#app-dialog").close();
     if (state.route.name === "chat") renderChat();
+    if (pendingQuestion) ask(pendingQuestion);
     notify(state.accountId ? "当前对话允许读取所选账户" : "已关闭账户读取");
     return;
   }
@@ -2225,6 +2389,7 @@ document.addEventListener("finch:authenticated", () => {
 });
 document.addEventListener("finch:locked", () => {
   clearHoldingsDraft();
+  state.pendingAccountQuestion = null;
   state.pastedImage = null;
   state.sessionImage = null;
   stopCalendarAlarms();
@@ -2248,6 +2413,7 @@ document.addEventListener("finch:signed-out", () => {
   state.pastedImage = null;
   state.sessionImage = null;
   state.accountId = null;
+  state.pendingAccountQuestion = null;
   state.watch = [];
   state.accounts = [];
   state.history = [];

@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import os
 import base64
+import asyncio
 import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from app import holdings, chat_images
+from app import holdings, chat_images, ai_tools, main
 from app.mysql_db import connect
 
 
@@ -36,6 +37,32 @@ class HoldingsTests(unittest.TestCase):
             else:
                 os.environ[key] = value
         self.temporary.cleanup()
+
+    def test_research_snapshot_requires_selected_owner_account(self) -> None:
+        holdings.save_snapshot("owner-a", "CNY", holdings.SnapshotInput(positions=[
+            holdings.PositionInput(instrument_id="CN:600519", name="贵州茅台", asset_class="stock", quantity=2, cost_basis=3000),
+        ]))
+        account = main.research_account_snapshot("owner-a", "personal-CNY")
+        self.assertEqual(account["positions"][0]["quantity"], 2)
+        self.assertEqual(account["mode"], "personal")
+        for owner, account_id in (("owner-b", "personal-CNY"), ("owner-a", "manual-other")):
+            with self.assertRaises(HTTPException) as raised:
+                main.research_account_snapshot(owner, account_id)
+            self.assertEqual(raised.exception.status_code, 422)
+
+    def test_authorized_research_tool_returns_real_position_evidence(self) -> None:
+        holdings.save_snapshot("owner-a", "CNY", holdings.SnapshotInput(positions=[
+            holdings.PositionInput(instrument_id="FUND:510300", name="沪深300 ETF", asset_class="fund", quantity=10, cost_basis=50),
+        ]))
+        account = main.research_account_snapshot("owner-a", "personal-CNY")
+        tools = ai_tools.ResearchTools(lambda _: {}, lambda _: None, lambda row: dict(row),
+                                       lambda _: {}, lambda _: account, "personal-CNY")
+        result = asyncio.run(tools.execute("get_account_snapshot", {"account_id": "personal-CNY"}))
+        self.assertEqual(result["positions"][0]["name"], "沪深300 ETF")
+        self.assertEqual(result["positions"][0]["quantity"], 10)
+        self.assertEqual(result["evidence"][0]["type"], "account_snapshot")
+        with self.assertRaises(ValueError):
+            asyncio.run(tools.execute("get_account_snapshot", {"account_id": "personal-USD"}))
 
     def test_allocation_profit_and_owner_isolation(self) -> None:
         with connect() as db:

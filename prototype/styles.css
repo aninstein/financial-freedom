@@ -458,6 +458,10 @@ small,
 .utility-card-head .icon-button:hover { color: var(--text); background: var(--raised); }
 .utility-card-head .icon-button svg { width: 12px; height: 12px; }
 .utility-card-body { flex: 1; min-height: 0; overflow: auto; padding: 9px 10px 6px; }
+.utility-note-body { overflow-wrap: anywhere; line-height: 1.55; }
+.utility-note-body > :first-child { margin-top: 0; }
+.utility-note-body > :last-child { margin-bottom: 0; }
+.utility-card-note { margin: 9px 0 0; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 .utility-card-actions { display: flex; flex: 0 0 auto; justify-content: space-between; padding: 5px 10px; border-top: 1px solid var(--line); color: var(--muted); font-size: 9px; }
 .utility-card-actions a:hover, .utility-card-actions button:hover, .utility-card-foot:hover { color: var(--primary); }
 .utility-card-actions button { border: 0; background: none; color: inherit; font: inherit; }
@@ -1929,6 +1933,18 @@ textarea.field {
   font-size: 12px;
   color: var(--muted);
 }
+.research-progress { min-height: 54px; }
+.research-tools { margin-top: 10px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.research-tools summary { width: fit-content; padding: 8px 0 2px; cursor: pointer; }
+.research-tools summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; border-radius: 3px; }
+.research-tools ol { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 2px; }
+.research-tools li { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-top: 1px solid var(--line); }
+.research-tools li small { margin-left: auto; font-size: 10px; }
+.research-tool-state { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--muted); }
+.research-tool-state.running { background: var(--caution); }
+.research-tool-state.done { background: var(--ready); }
+.research-tool-state.error { background: var(--negative); }
+.stream-answer { margin-top: 14px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); line-height: 1.7; }
 dialog {
   padding: 0;
   background: var(--surface);

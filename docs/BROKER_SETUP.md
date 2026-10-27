@@ -1,6 +1,32 @@
-> **暂缓草案**：2026-10-26 用户决定先完成模拟盘与投研。以下文件仅保留研究，应用不注册实盘路由、不加载券商配置、不发送券商请求。
+> **当前接入：富途 OpenD。** 以下中信、国金、盈立内容是历史调研草案；这些适配器仍未注册到网页交易接口。
 
-# 券商接入：中信 / 国金 / 盈立
+## 富途模拟与实盘
+
+安装官方 OpenD，按官方流程登录。`FUTU_TRADE_ENABLED=true` 后，`#/paper?source=futu` 查询富途 `SIMULATE` 账户，`#/live` 仅显示明确列入 `FUTU_REAL_ACCOUNT_IDS` 的 `REAL` 港股/美股账户。界面和接口不会要求登录密码或交易密码。`FUTU_ENABLED` 只控制行情，不能启用交易。
+
+```dotenv
+FUTU_TRADE_ENABLED=true
+FUTU_TRADE_SECURITY_FIRM=FUTUSECURITIES
+FUTU_SIMULATE_ORDERS_ENABLED=true
+LIVE_TRADING_ENABLED=false
+FUTU_REAL_ORDERS_ENABLED=false
+FUTU_REAL_ACCOUNT_IDS=
+FUTU_REAL_SYMBOLS=
+FUTU_MAX_ORDER_NOTIONAL=1000
+FUTU_MAX_DAILY_NOTIONAL=3000
+```
+
+先用页面查询账户尾号、币种、资金和持仓，再在富途模拟环境验证预览、下单、撤单与核对。真实发送必须由本人在 OpenD 手动解锁，并同时设置两个实盘发送开关、真实 `acc_id` 白名单、证券白名单与额度。账户被发现或开关开启不代表已经解锁；富途 SDK 没有独立的只读解锁确认步骤。未提供真实权限时保持两个发送开关为 `false`。
+
+2026-10-27 本机只读核验：OpenD 可连接，发现 4 个模拟账户（港股 2、美股 1、A 股 1）；四个账户的资金/持仓查询均成功，美股模拟账户的可买卖、当前委托和历史委托查询成功。当前未发现真实账户。没有向 OpenD 提交或撤销任何订单；下单、幂等、未知结果和撤单路径仅用替身测试验证。
+
+只支持港美股真实现金限价委托；`CN` 仅富途模拟，其资金查询按富途 SDK 的 `CNH` 币种参数与标识展示；`HKCC` A 股通未接入。订单预览 45 秒有效，提交前重新查询可买卖数量与现金并预留 1% 费用缓冲。每单使用持久请求键；超时后保留未知状态、阻断该账户新单，需先查询富途订单核对，不自动重发。富途模拟环境未提供独立成交明细时，页面展示订单累计成交数量。费用和成交以富途回报为准；撤单请求不代表撤单成功。
+
+参考：[富途交易概览](https://openapi.futunn.com/futu-api-doc/en/trade/overview.html)、[账户列表](https://openapi.futunn.com/futu-api-doc/en/trade/get-acc-list.html)、[下单](https://openapi.futunn.com/futu-api-doc/en/trade/place-order.html)、[交易解锁](https://openapi.futunn.com/futu-api-doc/en/trade/unlock.html)。
+
+---
+
+# 历史草案：中信 / 国金 / 盈立（当前未注册）
 
 ## 当前状态
 

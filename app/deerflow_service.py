@@ -52,7 +52,24 @@ async def serve() -> None:
                 raise ValueError("invalid_request")
             async with lock:
                 print(f"finch deerflow start run={request.get('run_id')}", file=sys.stderr, flush=True)
-                result = await asyncio.to_thread(execute, request)
+                if request.get("stream"):
+                    events: asyncio.Queue[dict] = asyncio.Queue()
+                    loop = asyncio.get_running_loop()
+
+                    def progress(event: dict) -> None:
+                        loop.call_soon_threadsafe(events.put_nowait, event)
+
+                    work = asyncio.create_task(asyncio.to_thread(execute, request, progress))
+                    while not work.done() or not events.empty():
+                        try:
+                            event = await asyncio.wait_for(events.get(), timeout=0.1)
+                        except asyncio.TimeoutError:
+                            continue
+                        writer.write(json.dumps({"event": event}, ensure_ascii=False).encode() + b"\n")
+                        await writer.drain()
+                    result = await work
+                else:
+                    result = await asyncio.to_thread(execute, request)
                 print(f"finch deerflow done run={request.get('run_id')} calls={result.get('tool_calls')}", file=sys.stderr, flush=True)
             response = {"ok": True, "result": result}
         except Exception as exc:

@@ -21,13 +21,16 @@ const labels = {
   broker_reported: "已有券商回报",
   cancel_requested: "撤单已请求",
   cancel_unknown: "撤单结果待核对",
+  partially_filled: "部分成交",
+  filled: "全部成交",
+  canceled: "已撤销",
 };
 function rows(orders) {
   return orders.length
     ? `<div class="table-scroll"><table class="data-table"><thead><tr><th>委托</th><th>方向 / 数量</th><th>金额 / 限价</th><th>券商状态</th><th>操作</th></tr></thead><tbody>${orders
         .map((o) => {
           const b = JSON.parse(o.body_json);
-          return `<tr><td>${esc(b.instrument_id)}<small>${esc(o.connection_id)}</small><small>${esc(o.order_id)}</small></td><td>${b.side === "buy" ? "买入" : "卖出"} ${number(b.quantity, 0)}</td><td>${number(o.notional)}<small>限价 ${esc(b.limit_price)}</small></td><td><span class="tag ${o.status === "unknown" ? "amber" : ""}">${labels[o.status] || esc(o.status)}</span><small>${esc(o.broker_status || "尚无券商回报")}</small>${o.error ? `<small class="negative">${esc(o.error)}</small>` : ""}<small>请求流水 ${esc(o.client_serial)}</small><small>${time(o.updated_at)}</small></td><td>${o.broker_order_id ? `<button class="button small danger" data-action="live-cancel" data-id="${esc(o.order_id)}">请求撤单</button>` : "—"}</td></tr>`;
+          return `<tr><td>${esc(b.instrument_id)}<small>${esc(o.connection_id)}</small><small>${esc(o.order_id)}</small></td><td>${b.side === "buy" ? "买入" : "卖出"} ${number(b.quantity, 0)}</td><td>${number(o.notional)}<small>限价 ${esc(b.limit_price)}</small></td><td><span class="tag ${o.status === "unknown" ? "amber" : ""}">${labels[o.status] || esc(o.status)}</span><small>${esc(o.broker_status || "尚无券商回报")}</small>${o.error ? `<small class="negative">${esc(o.error)}</small>` : ""}<small>请求流水 ${esc(o.client_serial)}</small><small>${time(o.updated_at)}</small></td><td>${o.broker_order_id && !["filled", "canceled", "rejected", "cancel_requested", "cancel_unknown"].includes(o.status) ? `<button class="button small danger" data-action="live-cancel" data-id="${esc(o.order_id)}">请求撤单</button>` : "—"}</td></tr>`;
         })
         .join("")}</tbody></table></div>`
     : empty(
@@ -46,11 +49,12 @@ export async function renderLive(r, signal, ui) {
     ui.page(
       ui.heading(
         "实盘交易",
-        "中信、国金按券商授权终端接入；盈立按官方OpenAPI接入。每笔委托由本人预览和确认。",
+        "富途 OpenD 真实账户。每笔限价委托需本人预览和确认。",
         `<span class="tag amber">真实资金 · 与模拟盘独立</span>`,
       ) +
-        `<div class="alert"><strong>实盘接入状态</strong><p>${esc(s.note)}</p><p>请在券商客户端或官方渠道完成登录、API授权。这里不收集股票登录密码，AI当前不能自主发送实盘订单。</p></div><div class="paper-account-grid section-gap">${s.catalog.map((c) => ui.panel(c.name, `<div class="panel-body"><span class="tag">${esc(c.market)}</span><p class="section-gap">${esc(c.interface)}</p><p class="field-help section-gap">${esc(c.status)}</p></div>`)).join("")}</div>` +
-        `<div class="split section-gap">${ui.panel("实盘限价委托", `<form id="live-order-form" class="panel-body" novalidate data-draft><div class="form-row"><label class="field-label" for="live-connection">已配置券商连接</label><select id="live-connection" class="field" name="connection_id">${s.connections.length ? s.connections.map((c) => `<option value="${esc(c.id)}" ${c.configured ? "" : "disabled"}>${esc(c.label)} · ${esc(c.market)} · ${c.trading_enabled ? "已配置发送开关" : "只读 / 发送关闭"}</option>`).join("") : '<option value="">尚未配置券商API</option>'}</select></div><div id="live-connection-note" class="field-help"></div><div class="form-row section-gap"><label class="field-label" for="live-instrument">股票代码</label><input id="live-instrument" class="field" name="instrument_id" placeholder="CN:600519 / US:AAPL" /></div><div class="form-grid"><div class="form-row"><label class="field-label" for="live-side">方向</label><select class="field" id="live-side" name="side"><option value="buy">买入</option><option value="sell">卖出</option></select></div><div class="form-row"><label class="field-label" for="live-quantity">股数</label><input id="live-quantity" class="field" type="number" min="1" step="1" name="quantity" /></div><div class="form-row"><label class="field-label" for="live-price">委托限价（账户原币种）</label><input id="live-price" class="field" type="number" min="0.0001" step="0.0001" name="limit_price" /></div></div><p class="field-help">仅现金限价委托，按券商返回的现金可买/可卖数量校验，另保留1%费用缓冲。提交不代表成交，费用与成交以券商回报为准。</p><div class="form-error" id="live-error" role="alert"></div><div class="actions"><button class="button primary" type="submit" ${s.connections.some((c) => c.configured) ? "" : "disabled"}>预览真实委托</button><button class="button" type="button" data-action="live-account" ${s.connections.some((c) => c.configured) ? "" : "disabled"}>查询真实账户</button></div></form>`)}${ui.panel("真实账户与持仓", `<div id="live-account-view" class="panel-body">${empty("尚未查询真实账户", "配置完成后，由你点击查询；系统不会用模拟余额替代。")}</div>`)}</div>` +
+        `<div class="alert"><strong>实盘接入状态</strong><p>${esc(s.note)}</p><p>在富途 OpenD 登录并手动解锁交易。网页不接收富途登录密码或交易密码；AI 不会自主发送真实订单。发送开关默认关闭。</p></div><div class="paper-account-grid section-gap">${s.catalog.map((c) => ui.panel(c.name, `<div class="panel-body"><span class="tag">${esc(c.market)}</span><p class="section-gap">${esc(c.interface)}</p><p class="field-help section-gap">${esc(c.status)}</p></div>`)).join("")}</div>` +
+        `<div class="paper-account-grid section-gap">${s.connections.length ? s.connections.map((c) => ui.panel(c.label, `<div class="panel-body"><span class="tag ${c.trading_enabled ? "amber" : ""}">${c.trading_enabled ? "已配置发送 · 解锁待确认" : "只读 / 发送关闭"}</span><p class="field-help section-gap">${esc(c.market)} · ${esc(c.currency)} · 账户尾号 ${esc(c.account_suffix)}</p><p class="field-help">单笔上限 ${esc(c.max_order_notional)} · 当日上限 ${esc(c.max_daily_notional)}</p></div>`)).join("") : empty("尚无富途真实账户", "请在 OpenD 登录，并在服务端配置真实账户白名单。")}</div>` +
+        `<div class="split section-gap">${ui.panel("实盘限价委托", `<form id="live-order-form" class="panel-body" novalidate data-draft><div class="form-row"><label class="field-label" for="live-connection">已配置券商连接</label><select id="live-connection" class="field" name="connection_id">${s.connections.length ? s.connections.map((c) => `<option value="${esc(c.id)}" ${c.configured ? "" : "disabled"}>${esc(c.label)} · ${esc(c.market)} · ${c.trading_enabled ? "已配置发送开关" : "只读 / 发送关闭"}</option>`).join("") : '<option value="">尚未配置券商API</option>'}</select></div><div id="live-connection-note" class="field-help"></div><div class="form-row section-gap"><label class="field-label" for="live-instrument">股票代码</label><input id="live-instrument" class="field" name="instrument_id" placeholder="HK:00700 / US:AAPL" /></div><div class="form-grid"><div class="form-row"><label class="field-label" for="live-side">方向</label><select class="field" id="live-side" name="side"><option value="buy">买入</option><option value="sell">卖出</option></select></div><div class="form-row"><label class="field-label" for="live-quantity">股数</label><input id="live-quantity" class="field" type="number" min="1" step="1" name="quantity" /></div><div class="form-row"><label class="field-label" for="live-price">委托限价（账户原币种）</label><input id="live-price" class="field" type="number" min="0.0001" step="0.0001" name="limit_price" /></div></div><p class="field-help">仅现金限价委托，按券商返回的现金可买/可卖数量校验，另保留1%费用缓冲。提交不代表成交，费用与成交以券商回报为准。</p><div class="form-error" id="live-error" role="alert"></div><div class="actions"><button class="button primary" type="submit" ${s.connections.some((c) => c.configured) ? "" : "disabled"}>预览真实委托</button><button class="button" type="button" data-action="live-account" ${s.connections.some((c) => c.configured) ? "" : "disabled"}>查询真实账户</button></div></form>`)}${ui.panel("真实账户与持仓", `<div id="live-account-view" class="panel-body">${empty("尚未查询真实账户", "配置完成后，由你点击查询；系统不会用模拟余额替代。")}</div>`)}</div>` +
         `<section class="panel section-gap"><div class="panel-header"><div><h2>本平台最近100笔实盘委托</h2><p>超时或断线先核对券商，结果未知时停止后续发送。</p></div><button class="button small" data-action="live-reconcile" ${s.connections.some((c) => c.configured) ? "" : "disabled"}>${icon("refresh")}核对所选连接</button></div><div id="live-orders">${rows(orders)}</div><p class="field-help panel-body" id="live-feedback" role="status"></p></section>`,
     ),
   );
@@ -103,7 +107,7 @@ export async function handleLiveSubmit(form, values, ui) {
         );
       const yes = await confirmDialog(
         "确认发送真实券商委托",
-        `<div class="alert error"><strong>这笔订单使用真实资金</strong></div><dl><dt>连接</dt><dd>${esc(d.connection_id)}</dd><dt>账户核对</dt><dd>${d.account_suffix ? "尾号 ****" + esc(d.account_suffix) : "API Token绑定的默认资金账户，请先核对真实账户"}</dd><dt>股票 / 方向</dt><dd>${esc(d.instrument_id)} / ${d.side === "buy" ? "买入" : "卖出"}</dd><dt>股数</dt><dd>${number(d.quantity, 0)}</dd><dt>限价</dt><dd>${money(d.limit_price, d.currency)}</dd><dt>委托名义金额</dt><dd>${money(d.notional, d.currency)}</dd><dt>有效期</dt><dd>至 ${time(new Date(d.expires_at * 1000).toISOString())}</dd></dl><p>确认后发送给券商，可能立即成交。费用、成交与撤单结果以券商回报为准。</p>`,
+        `<div class="alert error"><strong>这笔订单使用真实资金</strong></div><dl><dt>连接</dt><dd>${esc(d.connection_id)}</dd><dt>账户核对</dt><dd>${d.account_suffix ? "尾号 ****" + esc(d.account_suffix) : "请先查询并核对富途真实账户"}</dd><dt>股票 / 方向</dt><dd>${esc(d.instrument_id)} / ${d.side === "buy" ? "买入" : "卖出"}</dd><dt>股数</dt><dd>${number(d.quantity, 0)}</dd><dt>限价</dt><dd>${money(d.limit_price, d.currency)}</dd><dt>委托名义金额</dt><dd>${money(d.notional, d.currency)}</dd><dt>有效期</dt><dd>至 ${time(new Date(d.expires_at * 1000).toISOString())}</dd></dl><p>确认后发送给券商，可能立即成交。费用、成交与撤单结果以券商回报为准。</p>`,
         "确认发送真实订单",
         true,
       );
@@ -142,13 +146,13 @@ export async function handleLiveAction(button, ui) {
         { timeout: 45000 },
       );
       document.querySelector("#live-account-view").innerHTML =
-        `<h3>${esc(identifier)} · ${esc(a.currency)}${a.account_suffix ? " · 尾号 ****" + esc(a.account_suffix) : " · Token绑定账户"}</h3><p class="paper-balance section-gap">${money(a.cash, a.currency)}</p><p class="field-help">券商返回的可用现金 · 查询时间 ${typeof a.as_of === "number" ? time(new Date(a.as_of * 1000).toISOString()) : time(a.as_of)}</p>${a.positions.length ? `<div class="table-scroll section-gap"><table class="data-table"><thead><tr><th>股票</th><th>数量 / 可卖</th><th>成本</th></tr></thead><tbody>${a.positions.map((p) => `<tr><td>${esc(p.instrument_id)}</td><td>${number(p.quantity)} / ${number(p.sellable)}</td><td>${number(p.average_cost, 4)}</td></tr>`).join("")}</tbody></table></div>` : empty("暂无持仓", "以券商当前返回为准。")}`;
+        `<h3>${esc(identifier)} · ${esc(a.currency)}${a.account_suffix ? " · 尾号 ****" + esc(a.account_suffix) : " · 富途账户"}</h3><p class="paper-balance section-gap">${money(a.cash, a.currency)}</p><p class="field-help">券商返回的可用现金 · 查询时间 ${typeof a.as_of === "number" ? time(new Date(a.as_of * 1000).toISOString()) : time(a.as_of)}</p>${a.positions.length ? `<div class="table-scroll section-gap"><table class="data-table"><thead><tr><th>股票</th><th>数量 / 可卖</th><th>成本</th></tr></thead><tbody>${a.positions.map((p) => `<tr><td>${esc(p.instrument_id)}</td><td>${number(p.quantity)} / ${number(p.sellable)}</td><td>${number(p.average_cost, 4)}</td></tr>`).join("")}</tbody></table></div>` : empty("暂无持仓", "以券商当前返回为准。")}`;
     } else if (action === "live-reconcile") {
       const result = await request(
         "/live/connections/" + encodeURIComponent(identifier) + "/reconcile",
         { method: "POST", timeout: 45000 },
       );
-      document.querySelector("#live-orders").innerHTML = rows(result.orders);
+      document.querySelector("#live-orders").innerHTML = rows(await request("/live/orders"));
       document.querySelector("#live-feedback").textContent = result.note;
       notify("已读取券商委托回报");
     } else if (action === "live-cancel") {

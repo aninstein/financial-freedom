@@ -7,7 +7,7 @@ import json
 import os
 import socket
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from app.ai_agent import AgentUnavailable
 
@@ -48,6 +48,7 @@ async def run_deerflow_research(
     session_id: str | None = None,
     image_data_url: str | None = None,
     image_context_available: bool = False,
+    on_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     if not runtime_ready():
         raise AgentUnavailable("DeerFlow 尚未就绪；请运行 ./scripts/setup-deerflow.sh 并重启 ./run-local.sh")
@@ -58,6 +59,7 @@ async def run_deerflow_research(
         "session_id": session_id,
         "image_data_url": image_data_url,
         "image_context_available": image_context_available,
+        "stream": on_event is not None,
     }
 
     async def exchange() -> dict[str, Any]:
@@ -69,10 +71,16 @@ async def run_deerflow_research(
         try:
             writer.write(json.dumps(payload, ensure_ascii=False, default=str).encode() + b"\n")
             await writer.drain()
-            line = await reader.readline()
-            if not line:
-                raise AgentUnavailable("DeerFlow worker 已断开")
-            response = json.loads(line)
+            while True:
+                line = await reader.readline()
+                if not line:
+                    raise AgentUnavailable("DeerFlow worker 已断开")
+                response = json.loads(line)
+                if "event" in response:
+                    if on_event and isinstance(response["event"], dict):
+                        await on_event(response["event"])
+                    continue
+                break
             if not response.get("ok"):
                 raise AgentUnavailable("DeerFlow 运行失败：" + str(response.get("error", "RuntimeError")))
             result = response.get("result")

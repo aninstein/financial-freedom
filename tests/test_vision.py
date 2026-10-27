@@ -15,6 +15,17 @@ from app import investment_memory as memory
 
 
 class VisionInputTests(unittest.TestCase):
+    def test_agent_keeps_preloaded_account_evidence(self):
+        config = ModelConfig("openai", "test", "https://example.com/v1", "test")
+        evidence = {"evidence_id": "E001", "type": "account_snapshot", "detail": {"positions": [{"instrument_id": "CN:600519"}]}}
+        async def no_tool(_name, _args):
+            raise AssertionError("不需要额外工具")
+        with patch("app.ai_agent.load_model_configs", return_value=([config], None)), \
+             patch("app.ai_agent._chat", new=AsyncMock(return_value={"content": "已读取真实持仓 [E001]。"})):
+            result = asyncio.run(run_agent("分析我的持仓", no_tool, initial_evidence=[evidence]))
+        self.assertEqual(result["evidence"], [evidence])
+        self.assertIn("已读取真实持仓", result["answer"])
+
     def test_image_validation(self):
         png = b"\x89PNG\r\n\x1a\n" + b"content"
         data_url = "data:image/png;base64," + base64.b64encode(png).decode()

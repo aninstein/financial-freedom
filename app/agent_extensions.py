@@ -280,6 +280,8 @@ def save_mcp_group(raw: dict) -> list[str]:
     configs = _load_mcp()
     names = []
     for name, item in group.items():
+        if name == 'finch':
+            raise ExtensionError('finch 是内置平台 MCP，不能覆盖')
         normalized = _validate_mcp(name, item)
         configs[name] = normalized
         names.append(name)
@@ -288,8 +290,12 @@ def save_mcp_group(raw: dict) -> list[str]:
 
 
 def list_mcp() -> list[dict]:
-    rows = []
+    rows = [{'name': 'finch', 'type': 'builtin', 'enabled': True, 'command': None,
+             'url': None, 'allow_write_tools': True, 'tool_count': 3,
+             'tools': ['catalog', 'read', 'write'], 'status': 'connected', 'managed': True}]
     for name, item in _load_mcp().items():
+        if name == 'finch':
+            continue
         rows.append({'name': name, 'type': item.get('type'), 'enabled': item.get('enabled', False),
                      'command': item.get('command'),
                      'url': (lambda parsed: f'{parsed.scheme}://{parsed.netloc}')(urlparse(item['url'])) if item.get('url') else None,
@@ -340,6 +346,8 @@ async def _mcp_session(item: dict, stack: AsyncExitStack):
 
 
 async def probe_mcp(name: str) -> dict:
+    if name == 'finch':
+        return list_mcp()[0]
     configs = _load_mcp()
     if name not in configs:
         raise ExtensionError('MCP 连接不存在')
@@ -364,8 +372,11 @@ async def probe_mcp(name: str) -> dict:
 
 
 def mcp_tool_definitions() -> list[dict]:
-    definitions = []
+    from app.platform_mcp import definitions as platform_definitions
+    definitions = platform_definitions()
     for server, item in _load_mcp().items():
+        if server == 'finch':
+            continue
         if not item.get('enabled') or item.get('status') != 'connected':
             continue
         for tool in item.get('tools', []):
@@ -377,21 +388,34 @@ def mcp_tool_definitions() -> list[dict]:
             definitions.append({'type': 'function', 'function': {
                 'name': name, 'description': f"{server}: {tool.get('description', '')[:600]}",
                 'parameters': tool.get('inputSchema', {'type': 'object'})}})
-    return definitions[:40]
+    return definitions[:43]
 
 
-async def call_mcp_tool(composite_name: str, arguments: dict) -> dict:
+async def call_mcp_tool(composite_name: str, arguments: dict, owner_id: str | None = None) -> dict:
     if composite_name not in {x['function']['name'] for x in mcp_tool_definitions()}:
         raise ExtensionError('MCP 工具未启用')
     _, server, tool_name = composite_name.split('__', 2)
-    item = _load_mcp()[server]
+    if server == 'finch':
+        if not owner_id:
+            raise ExtensionError('内置平台 MCP 缺少账户身份')
+        runtime_env = {key: os.environ[key] for key in
+                       ('MYSQL_HOST', 'MYSQL_PORT', 'MYSQL_USER', 'MYSQL_DATABASE',
+                        'MYSQL_PASSWORD_FILE', 'MYSQL_PASSWORD', 'DATA_DIR', 'CONTAINER_RUNTIME',
+                        'FUTU_OPEND_HOST', 'FUTU_OPEND_PORT', 'FUTU_TRADE_ENABLED',
+                        'FUTU_TRADE_SECURITY_FIRM', 'FUTU_REAL_ACCOUNT_IDS')
+                       if key in os.environ}
+        item = {'type': 'stdio', 'command': 'python', 'args': ['-m', 'app.platform_mcp_server'],
+                'env': {**runtime_env, 'FINCH_MCP_OWNER_ID': owner_id}}
+    else:
+        item = _load_mcp()[server]
     async with asyncio.timeout(30):
         async with AsyncExitStack() as stack:
             session = await _mcp_session(item, stack)
             result = await session.call_tool(tool_name, arguments)
     data = result.model_dump(mode='json', exclude_none=True)
+    content = json.dumps(data.get('content', []), ensure_ascii=False)[:16000]
     return {'server': server, 'tool': tool_name, 'isError': data.get('isError', False),
-            'content': json.dumps(data.get('content', []), ensure_ascii=False)[:16000]}
+            'content': content, **({'error': content[:800]} if data.get('isError') else {})}
 
 
 def parse_chat_action(question: str) -> tuple[str, object] | None:
