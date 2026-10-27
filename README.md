@@ -46,6 +46,8 @@ docker compose exec web python -m app.manage init-owner
 
 然后打开 <http://127.0.0.1:8000>，用账号和密码登录。已有账号在迁移校验通过后继续使用原密码。默认采用密码登录。未登录时，行情、账户、资料与API文档均不可访问。没有默认密码或公开注册。
 
+微信小程序入口位于 [financial-freedom-applet](https://github.com/aninstein/financial-freedom-applet)。部署 HTTPS 后，可在服务端配置 `WECHAT_MINIPROGRAM_APPID` 与 `WECHAT_MINIPROGRAM_SECRET`：小程序通过 `wx.login` 取得一次性 code，服务端向微信换取 OpenID。首次登录需用现有账号密码绑定；密码变更后需重新绑定。已绑定用户以 60 秒、单次使用的网页登录票据建立原有 HttpOnly Cookie 会话。AppSecret、OpenID 和会话密钥不会下发到小程序。
+
 首次批量行情抓取需要时间；上游不可访问时保留数据缺口。API文档在登录后访问 <http://127.0.0.1:8000/docs>。安全与恢复方式见 [docs/SECURITY.md](docs/SECURITY.md)。
 
 可通过 `.env.example` 中列出的环境变量配置刷新频率、模型、数据请求并发数和日线失败重试间隔。Compose 管理 MySQL 凭据和数据卷；私密 `.env`、`.runtime/secrets/` 不进入镜像或 Git。每个模拟账户的初始资金在开户表单自行填写。

@@ -1,0 +1,6 @@
+html, body { margin: 0; min-height: 100%; background: #111827; color: #e4e4e7; }
+body { font: 14px/1.6 -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif; }
+main { padding: 20vh 24px 32px; }
+.mark { color: #ff5c5c; font-size: 44px; }
+h1 { margin: 20px 0 8px; font-size: 24px; }
+p { color: #aeb6c4; }

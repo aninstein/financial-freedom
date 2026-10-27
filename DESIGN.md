@@ -132,6 +132,8 @@ Recommendations show direction, horizon, confidence, timestamp, data sources, st
 
 Unauthenticated screens use the existing warm graphite/vermilion tokens, a quiet identity panel and password fields with explicit reveal controls. Default sign-in consists only of account and password. Optional SMS appears after correct credentials, with masked recipient, user-triggered send, resend cooldown, expiration, inline failure and a return action. It never requires an authenticator app. The workspace stays hidden until full authentication, including SMS when enabled. Reauthentication asks only for the account password; no OTP field appears in transaction or password-change confirmation. Use the shared identity form helper, API security handler and application dialog.
 
+The WeChat mini-program has a separate native entry screen in `financial-freedom-applet`: WeChat identity is verified by the server and linked to the existing owner only after a password check. The page container then receives the existing web session through a single-use handoff. The workspace keeps its current responsive layout and security feedback.
+
 ## Stock Detail Surface
 
 The price page is anchored by an OHLC chart with a separate volume band, labeled moving averages, source time and adjustment scope. Period and range controls change real data aggregation or visible samples. Raw financial datasets belong in separate subtabs, with report periods across table columns where possible. Keep external disclosure links near the source panel; distinguish news, announcements, research-directory metadata and user-imported originals.

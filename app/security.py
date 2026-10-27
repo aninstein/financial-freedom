@@ -17,11 +17,12 @@ from contextvars import ContextVar
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import httpx
 from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError, InvalidHashError
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 from app.mysql_db import connect as mysql_connect
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -98,6 +99,12 @@ def initialize():
         CREATE TABLE IF NOT EXISTS recovery_codes (
           user_id TEXT REFERENCES users(id), digest TEXT NOT NULL UNIQUE, used_at INTEGER);
         CREATE TABLE IF NOT EXISTS auth_limits (key TEXT PRIMARY KEY, window INTEGER NOT NULL, count INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS wechat_bindings (
+          openid_digest TEXT PRIMARY KEY, user_id TEXT REFERENCES users(id),
+          bound_version INTEGER NOT NULL, created_at INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS wechat_tickets (
+          digest TEXT PRIMARY KEY, user_id TEXT REFERENCES users(id),
+          user_version INTEGER NOT NULL, expires_at INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS audit (
           id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at INTEGER NOT NULL, actor TEXT,
           action TEXT NOT NULL, target TEXT NOT NULL, prev_hash TEXT NOT NULL, signature TEXT NOT NULL);
@@ -106,6 +113,12 @@ def initialize():
         columns={r['name'] for r in c.execute('PRAGMA table_info(sessions)')}
         if 'auth_method' not in columns:
             c.execute("ALTER TABLE sessions ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'legacy'")
+        binding_columns = {r['name'] for r in c.execute('PRAGMA table_info(wechat_bindings)')}
+        if 'bound_version' not in binding_columns:
+            c.execute('ALTER TABLE wechat_bindings ADD COLUMN bound_version INTEGER NOT NULL DEFAULT 0')
+        ticket_columns = {r['name'] for r in c.execute('PRAGMA table_info(wechat_tickets)')}
+        if 'user_version' not in ticket_columns:
+            c.execute('ALTER TABLE wechat_tickets ADD COLUMN user_version INTEGER NOT NULL DEFAULT 0')
         policy='password-only-v2'
         previous=c.execute("SELECT value FROM auth_metadata WHERE key='login_policy'").fetchone()
         if not previous or previous['value']!=policy:
@@ -230,6 +243,120 @@ class PasswordChange(Reauth):
     new_password: str = Field(min_length=14, max_length=256)
 
 
+class WechatExchange(BaseModel):
+    code: str = Field(min_length=1, max_length=512)
+    username: str | None = Field(default=None, max_length=80)
+    password: str | None = Field(default=None, max_length=256)
+
+
+class WechatTicket(BaseModel):
+    ticket: str = Field(min_length=32, max_length=128)
+
+
+async def wechat_openid(code: str) -> str:
+    appid = os.getenv('WECHAT_MINIPROGRAM_APPID', '').strip()
+    secret = os.getenv('WECHAT_MINIPROGRAM_SECRET', '').strip()
+    if not appid or not secret:
+        fail('WECHAT_NOT_CONFIGURED', '服务端尚未配置微信小程序登录。', 503)
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            result = await client.get('https://api.weixin.qq.com/sns/jscode2session', params={
+                'appid': appid, 'secret': secret, 'js_code': code, 'grant_type': 'authorization_code',
+            })
+            result.raise_for_status()
+            payload = result.json()
+    except (httpx.HTTPError, ValueError):
+        fail('WECHAT_UNAVAILABLE', '微信身份校验暂时不可用，请稍后重试。', 502)
+    openid = payload.get('openid') if isinstance(payload, dict) else None
+    if not isinstance(payload, dict) or payload.get('errcode') or not isinstance(openid, str) or not openid:
+        fail('WECHAT_CODE_INVALID', '微信登录凭证已失效，请重试。', 401)
+    return openid
+
+
+def wechat_openid_digest(openid: str) -> str:
+    return hmac.new(os.environ['AUTH_AUDIT_KEY'].encode(),
+                    ('wechat-openid:' + openid).encode(), hashlib.sha256).hexdigest()
+
+
+@router.post('/wechat/exchange')
+async def wechat_exchange(body: WechatExchange, request: Request):
+    if 'application/json' not in request.headers.get('content-type', ''):
+        fail('JSON_REQUIRED', '请使用JSON请求。', 415)
+    origin = request.headers.get('origin')
+    if (origin and origin != ORIGIN) or request.headers.get('sec-fetch-site') == 'cross-site':
+        fail('CSRF_FAILED', '请求来源无效。', 403)
+    rate_limit(request, 'wechat_exchange', body.username or '')
+    digest = wechat_openid_digest(await wechat_openid(body.code))
+    with connection() as c:
+        binding = c.execute('SELECT b.user_id,b.bound_version,u.version FROM wechat_bindings b '
+                            'LEFT JOIN users u ON u.id=b.user_id WHERE b.openid_digest=?', (digest,)).fetchone()
+    if not binding or binding['version'] != binding['bound_version']:
+        if not body.username or not body.password:
+            return {'bind_required': True}
+        username = body.username.strip().casefold()
+        rate_limit(request, 'wechat_bind', username)
+        with connection() as c:
+            user = c.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
+        valid = await asyncio.to_thread(check_password, user['password_hash'] if user else DUMMY, body.password)
+        if not user or not valid:
+            with connection() as c:
+                audit(c, None, 'auth.wechat_bind_failed')
+            fail('AUTH_INVALID', '账号或密码不正确。', 401)
+        with connection() as c:
+            c.execute('BEGIN IMMEDIATE')
+            current = c.execute('SELECT * FROM users WHERE id=?', (user['id'],)).fetchone()
+            if not current or current['password_hash'] != user['password_hash']:
+                fail('AUTH_INVALID', '账户状态已变更，请重新验证。', 401)
+            c.execute('INSERT OR IGNORE INTO wechat_bindings(openid_digest,user_id,bound_version,created_at) VALUES(?,?,?,?)',
+                      (digest, current['id'], current['version'], int(time.time())))
+            binding = c.execute('SELECT user_id FROM wechat_bindings WHERE openid_digest=?', (digest,)).fetchone()
+            if binding['user_id'] != current['id']:
+                fail('WECHAT_BOUND', '该微信身份已绑定其他账户。', 409)
+            c.execute('UPDATE wechat_bindings SET bound_version=? WHERE openid_digest=?', (current['version'], digest))
+            audit(c, current['id'], 'auth.wechat_bound')
+    ticket = secrets.token_urlsafe(32)
+    now = int(time.time())
+    with connection() as c:
+        current_binding = c.execute('SELECT b.user_id,b.bound_version,u.version FROM wechat_bindings b '
+                                    'LEFT JOIN users u ON u.id=b.user_id WHERE b.openid_digest=?', (digest,)).fetchone()
+        if not current_binding or current_binding['version'] != current_binding['bound_version']:
+            fail('WECHAT_BIND_REQUIRED', '账户状态已变更，请重新绑定。', 409)
+        c.execute('DELETE FROM wechat_tickets WHERE expires_at<?', (now,))
+        c.execute('INSERT INTO wechat_tickets(digest,user_id,user_version,expires_at) VALUES(?,?,?,?)',
+                  (hashlib.sha256(ticket.encode()).hexdigest(), current_binding['user_id'],
+                   current_binding['version'], now + 60))
+    return {'ticket': ticket, 'expires_in': 60}
+
+
+@router.get('/wechat/entry', response_class=HTMLResponse)
+def wechat_entry():
+    return HTMLResponse('''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>正在登录 Finch</title>
+<link rel="stylesheet" href="/assets/wechat-entry.css"></head><body>
+<main><div class="mark">✦</div><h1>正在进入私人工作台</h1><p id="state" role="status">正在建立安全会话…</p></main>
+<script src="/assets/wechat-entry.js" defer></script></body></html>''')
+
+
+@router.post('/wechat/consume')
+def wechat_consume(body: WechatTicket, request: Request, response: Response):
+    public_json(request)
+    digest = hashlib.sha256(body.ticket.encode()).hexdigest()
+    now = int(time.time())
+    with connection() as c:
+        c.execute('BEGIN IMMEDIATE')
+        ticket = c.execute('SELECT user_id,user_version,expires_at FROM wechat_tickets WHERE digest=?', (digest,)).fetchone()
+        if not ticket or ticket['expires_at'] <= now:
+            fail('WECHAT_TICKET_INVALID', '登录凭证已失效，请返回小程序重试。', 401)
+        removed = c.execute('DELETE FROM wechat_tickets WHERE digest=?', (digest,))
+        if removed.rowcount != 1:
+            fail('WECHAT_TICKET_INVALID', '登录凭证已使用，请返回小程序重试。', 401)
+        user = c.execute('SELECT * FROM users WHERE id=?', (ticket['user_id'],)).fetchone()
+        if not user or user['version'] != ticket['user_version']:
+            fail('AUTH_INVALID', '账户状态已变更，请返回小程序重试。', 401)
+        identity = finish_login(c, user, request, response, 'wechat')
+    return identity
+
+
 def finish_login(c,user,request,response,method):
     current=c.execute('SELECT * FROM users WHERE id=?',(user['id'],)).fetchone()
     if not current or current['version']!=user['version']:
@@ -239,7 +366,8 @@ def finish_login(c,user,request,response,method):
     old=hashlib.sha256(request.cookies.get(COOKIE,'').encode()).hexdigest()
     c.execute('DELETE FROM sessions WHERE digest=? OR expires_at<?',(old,now))
     c.execute('INSERT INTO sessions(digest,user_id,csrf,created_at,expires_at,last_seen,version,mfa_verified,reauth_at,device,auth_method) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
-              (digest,user['id'],csrf,now,now+TTL,now,user['version'],1,now,request.headers.get('user-agent','')[:160],method))
+              (digest,user['id'],csrf,now,now+TTL,now,user['version'],1,now if method == 'password' else 0,
+               request.headers.get('user-agent','')[:160],method))
     audit(c,user['id'],'auth.login',method)
     response.set_cookie(COOKIE,raw,max_age=TTL,httponly=True,secure=SECURE,samesite='strict',path='/')
     return describe(current,c.execute('SELECT * FROM sessions WHERE digest=?',(digest,)).fetchone())
@@ -368,7 +496,9 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 fail('HTTPS_REQUIRED', '请通过 HTTPS 访问。', 403)
             if path.startswith('/api/v1/auth/') and int(request.headers.get('content-length', '0') or 0) > 8192:
                 fail('BODY_TOO_LARGE', '请求过大。', 413)
-            public = path in {'/api/v1/auth/status', '/api/v1/auth/login', '/api/v1/health'}
+            public = path in {'/api/v1/auth/status', '/api/v1/auth/login',
+                              '/api/v1/auth/wechat/exchange', '/api/v1/auth/wechat/entry',
+                              '/api/v1/auth/wechat/consume', '/api/v1/health'}
             protected = path.startswith('/api/') or path in {'/docs', '/redoc', '/openapi.json'}
             if protected and not public:
                 user, session = authenticate(request)
