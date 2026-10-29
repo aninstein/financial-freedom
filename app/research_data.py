@@ -37,6 +37,22 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def last_closed_index_session(market: str) -> str:
+    """The last exchange session whose close has passed, with a brief feed lag."""
+    zone = 'America/New_York' if market == 'US' else 'Asia/Shanghai'
+    observed = datetime.now(timezone.utc)
+    local_day = observed.astimezone(ZoneInfo(zone)).date()
+    try:
+        import exchange_calendars as xcals
+        calendar = xcals.get_calendar({'US':'XNYS','HK':'XHKG','CN':'XSHG'}[market])
+        session = calendar.date_to_session(local_day.isoformat(), direction='previous')
+        if observed < calendar.session_close(session).to_pydatetime() + timedelta(minutes=20):
+            session = calendar.previous_session(session)
+        return session.date().isoformat()
+    except Exception:
+        return (local_day - timedelta(days=1)).isoformat()
+
+
 def fetch(kind, key):
     if kind in {'omo','rotation','news_cls','news_em'}:
         from app.market_context import fetch_context
@@ -60,7 +76,7 @@ def fetch(kind, key):
                 frame=ak.index_global_hist_em(symbol=meta['symbol'])
                 source='AKShare · index_global_hist_em · 东方财富' 
         frame = frame.rename(columns={'日期':'bar_time','date':'bar_time','今开':'open','最高':'high','最低':'low','最新价':'close'})
-        cutoff = datetime.now(ZoneInfo('America/New_York' if meta['market']=='US' else 'Asia/Shanghai')).date().isoformat()
+        last_closed = last_closed_index_session(meta['market'])
         rows = []
         for raw in _records(frame):
             stamp = str(raw.get('bar_time',''))[:10]
@@ -69,7 +85,7 @@ def fetch(kind, key):
                 values = [float(raw[k]) for k in ('open','high','low','close')]
             except (ValueError, TypeError, KeyError):
                 continue
-            if stamp >= cutoff or not all(math.isfinite(v) and v > 0 for v in values):
+            if stamp > last_closed or not all(math.isfinite(v) and v > 0 for v in values):
                 continue
             o,h,l,c = values
             if h < max(o,c,l) or l > min(o,c,h):
@@ -78,7 +94,7 @@ def fetch(kind, key):
                          'volume':raw.get('volume'), 'volume_unit':'unknown'})
         # Keep at most ten years and one row per date; do not synthesize missing days.
         rows = sorted({r['bar_time']:r for r in rows}.values(), key=lambda r:r['bar_time'])[-2600:]
-        note = '指数点位，不能直接下单；仅收录当地日期早于今天的日线。成交量单位未确认，不跨源比较。'
+        note = '指数点位，不能直接下单；仅收录交易所已收盘且预留20分钟数据延迟的日线。成交量单位未确认，不跨源比较。'
     elif kind == 'market_flow':
         rows = _records(ak.stock_market_fund_flow())[-120:][::-1]
         source += ' · stock_market_fund_flow'
@@ -124,15 +140,7 @@ async def _worker(kind, key):
 def index_freshness(data, key):
     if not data.get('rows'): return data
     market=INDEXES[key]['market']
-    zone='America/New_York' if market=='US' else 'Asia/Shanghai'
-    yesterday=datetime.now(ZoneInfo(zone)).date()-timedelta(days=1)
-    expected=None
-    try:
-        import exchange_calendars as xcals
-        calendar=xcals.get_calendar({'US':'XNYS','HK':'XHKG','CN':'XSHG'}[market])
-        expected=calendar.date_to_session(yesterday.isoformat(),direction='previous').date().isoformat()
-    except Exception:
-        pass
+    expected=last_closed_index_session(market)
     data['expected_last_bar']=expected
     if expected and data['rows'][-1]['bar_time']<expected:
         data['state']='stale'; data['freshness']='stale'
@@ -182,7 +190,7 @@ async def _collect_and_store(db,kind,key,old):
         error_type=str(exc) if isinstance(exc,ProviderError) else type(exc).__name__
         error = '数据源请求超时' if isinstance(exc,asyncio.TimeoutError) else f'来源未返回有效数据（{error_type}）'
         data = {**old,'state':'stale','freshness':'stale','error':error} if old and old.get('rows') else {
-            'state':'error','rows':[],'error':error,'received_at':None,'source_time':None,'source':{'omo':'中国人民银行公告','news_cls':'财联社电报 · AKShare','news_em':'东方财富快讯 · AKShare','rotation':'东方财富行业资金流 · AKShare'}.get(kind,'AKShare 公共数据'),'freshness':'unavailable',
+            'state':'error','rows':[],'error':error,'received_at':None,'source_time':None,'source':{'omo':'中国人民银行公告','news_cls':'财联社电报 · AKShare','news_em':'东方财富快讯 · AKShare','rotation':'同花顺行业资金流 · AKShare'}.get(kind,'AKShare 公共数据'),'freshness':'unavailable',
             'note':'来源未返回有效数据，空值不代表零。'}
     digest = hashlib.sha256(json.dumps(data['rows'],ensure_ascii=False,sort_keys=True).encode()).hexdigest()
     data.update(content_hash=digest, key=key, kind=kind, attempted_at=now(), cached=False, cache_expired=False)

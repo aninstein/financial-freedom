@@ -1,30 +1,23 @@
-# Financial Freedom
+# finfreedom
 
-Financial Freedom 是一个本地优先的股票研究与交易工作台：用 AI 分析行情、板块、财报和自选股，维护个人持仓，进行本地模拟交易，并通过富途 OpenD 查看富途模拟/实盘账户。真实订单发送默认关闭，AI 没有实盘下单权限。
+finfreedom 是面向国内用户的本地优先投资研究与账户工作台：用 AI 分析行情、板块、财报和自选股，维护个人持仓，进行本地模拟交易，并通过富途 OpenD 查看富途模拟/实盘账户。真实订单发送默认关闭，AI 没有实盘下单权限。
+
+finfreedom 及相关商标归利长安（[lichangan.com](https://lichangan.com)）所有。项目中的历史技术标识（如 `finch` MCP 名称、浏览器存储键和容器项目名）为兼容现有配置与数据保留，不作为软件对外名称。
 
 项目采用 [PolyForm Noncommercial 1.0.0](LICENSE)。允许非商业使用、学习和研究；商业使用需要单独授权。第三方依赖遵循各自许可证。
-
-## 界面截图
-
-![AI 投研工作台](docs/screenshots/workbench.png)
-
-![个股详情与历史行情](docs/screenshots/stock-detail.png)
-
-![登录页](docs/screenshots/login.png)
-
-截图用于展示界面结构，账户、行情和连接状态会随本地配置变化。
 
 ## 功能简介
 
 | 模块 | 能做什么 | 页面 |
 | --- | --- | --- |
 | AI 投研 | 查询行情、新闻、流动性、板块、财务、基金披露和历史回测，输出带来源与时间的分析 | `#/chat` |
-| 行情与研究 | 自选股、跨市场搜索、个股详情、K 线、指数、行业轮动和资金 | `#/watchlist`、`#/markets`、`#/stocks/...`、`#/indices`、`#/sectors` |
+| 行情与研究 | 自选股、跨市场搜索、个股详情、K 线、指数、行业轮动和资金 | `#/watchlist`、`#/markets`、`#/stocks/...`、`#/indices`、`#/sectors`、`#/flows` |
+| 公募基金 | 搜索东方财富基金目录，查看净值、收益、经理、费率、申赎状态和定期披露持仓 | `#/funds`、`#/funds/110022` |
 | 我的持仓 | 按 CNY/HKD/USD 管理手工录入的真实持仓快照，支持截图识别草稿 | `#/holdings` |
 | 模拟炒股 | 本地模拟账本、富途 `SIMULATE` 账户、模拟订单和受限 AI 模拟任务 | `#/paper`；入口在「更多工具 → 研究工具」 |
 | 实盘交易 | 读取富途 `REAL` 账户资金/持仓/委托，逐笔预览和人工确认真实限价单 | `#/live`；入口在主菜单 |
 | 资料与记忆 | 导入 PDF/TXT/Markdown/CSV，按页检索；保存投研对话摘要和投资记忆 | `#/documents`、`#/memory` |
-| 工作台与扩展 | 管理右栏卡片、日历、Skills 和 MCP；内置 Finch MCP 可供 AI 只读分析交易数据 | `#/settings`、`#/calendar` |
+| 工作台与扩展 | 管理右栏卡片、日历、Skills 和 MCP；内置 finfreedom 平台 MCP 可供 AI 只读分析交易数据 | `#/settings`、`#/calendar` |
 
 模拟账本、本地持仓、富途模拟和富途真实账户始终分开显示，不合并资金或收益。普通研究只读；AI 只能在用户明确授权的固定本地模拟账户、股票白名单和额度内执行一轮模拟交易。
 
@@ -39,8 +32,8 @@ Financial Freedom 是一个本地优先的股票研究与交易工作台：用 A
 ### 启动服务
 
 ```bash
-git clone <仓库地址>
-cd financial-freedom
+git clone <仓库地址> finfreedom
+cd finfreedom
 ./scripts/docker-up.sh
 ```
 
@@ -151,13 +144,17 @@ LONGBRIDGE_ACCESS_TOKEN=你的AccessToken
 | 数据 | 默认来源 | 说明 |
 | --- | --- | --- |
 | A 股、港股、美股、基金和黄金行情 | AKShare 封装的公开网页接口 | 可能限流或字段变化；页面保留来源时间和数据缺口 |
+| 公募基金目录与研究 | 东方财富 / 天天基金公开网页接口 | 目录每日缓存、详情按需同步并缓存半小时；目录含历史产品，能否购买以申购状态及交易平台为准 |
+| 大盘、行业与北向资金 | 东方财富公开数据接口，部分大盘历史经 AKShare | 成交分类资金、主力净流入和北向成交数据各自保留口径；北向净买额上游为空时显示空值 |
 | A 股日线 | 东方财富，异常时回退腾讯 | 用于研究和回测，不直接冒充实时成交价 |
 | 富途行情/账户/委托 | 本机 Futu OpenD | 取决于登录状态、市场权限、交易环境和 OpenD 解锁状态 |
 | 长桥指数 | Longbridge OpenAPI（可选） | 需要 App Key、App Secret、Access Token；当前只读行情 |
 | 交易日历 | XSHG、XHKG、XNYS 与上海黄金交易时段 | 临时节假日以交易所公告为准 |
 | 持仓、订单、研究、资料和记忆 | 本地 MySQL/InnoDB | 由 Docker volume 持久化，按账号隔离的内容不送往外部服务，除非用户选择模型分析 |
 
-公共行情没有实时 SLA。北向实时买卖额、基金实时操作流水、付费研报全文和扫描版 PDF OCR 不在当前完整覆盖范围内；数据缺失时页面和 Agent 会明确说明。
+公共行情没有实时 SLA。基金当日净值估算仅在来源可核实时显示；当前公开接口缺失时展示数据缺口。北向实时买卖额、基金实时操作流水、付费研报全文和扫描版 PDF OCR 不在当前完整覆盖范围内；数据缺失时页面和 Agent 会明确说明。
+
+基金研究接口：`GET /api/v1/research/funds?q=关键词&category=ETF&page=1` 返回全目录搜索；`GET /api/v1/research/funds/{六位代码}` 返回单只基金详情；两者可加 `refresh=true` 强制同步。资金接口 `GET /api/v1/research/flows` 同时返回大盘、行业与北向独立结果。数据同步只读取公开网页，不发起基金交易。
 
 ## AI 与 MCP
 

@@ -331,7 +331,7 @@ async def wechat_exchange(body: WechatExchange, request: Request):
 @router.get('/wechat/entry', response_class=HTMLResponse)
 def wechat_entry():
     return HTMLResponse('''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>正在登录 Finch</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>正在登录 finfreedom</title>
 <link rel="stylesheet" href="/assets/wechat-entry.css"></head><body>
 <main><div class="mark">✦</div><h1>正在进入私人工作台</h1><p id="state" role="status">正在建立安全会话…</p></main>
 <script src="/assets/wechat-entry.js" defer></script></body></html>''')

@@ -6,11 +6,11 @@ import json
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
-from app import futu_trade, main, paper, platform_mcp, platform_workspace
+from app import futu_trade, holdings, main, paper, platform_mcp, platform_workspace
 from app.mysql_db import connect
 
 
@@ -58,6 +58,43 @@ class PlatformMCPTests(unittest.TestCase):
             asyncio.run(platform_mcp.read("owner-a", "wiki_file", {"path": "sessions/2026-10-27/a.summary.md"}))
         self.assertEqual(blocked.exception.status_code, 403)
         self.assertNotIn("orders", platform_mcp.catalog()["writable"])
+
+    def test_holdings_import_tool_saves_owner_scoped_review_draft_only(self) -> None:
+        holdings.initialize()
+        preview = {"currency": "CNY", "positions": [{"instrument_id": None, "name": "示例基金",
+                   "asset_class": "fund", "quantity": None, "cost_basis": None,
+                   "manual_value": 30000, "reported_return_pct": None}],
+                   "principal": None, "cash": None, "warnings": [], "source": "文字",
+                   "extracted_at": "2026-10-29T00:00:00Z"}
+        with patch.object(holdings, "preview_import", new=AsyncMock(return_value=preview)) as extract:
+            result = asyncio.run(platform_mcp.prepare_holdings_import("owner-a", text="示例基金金额3万元"))
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["missing_quantity"], 1)
+        self.assertIn(result["draft_id"], result["review_url"])
+        self.assertEqual(extract.await_args.args[0], "owner-a")
+        self.assertEqual(holdings.get_import_draft("owner-a", result["draft_id"])["positions"][0]["name"], "示例基金")
+        with self.assertRaises(HTTPException):
+            holdings.get_import_draft("owner-b", result["draft_id"])
+        self.assertEqual(holdings.get_portfolios("owner-a"), [])
+
+    def test_research_capabilities_are_mcp_tools_with_tool_owned_validation(self) -> None:
+        names = {item["function"]["name"] for item in platform_mcp.definitions()}
+        self.assertIn("mcp__finch__research", names)
+        self.assertIn("get_historical_cycles", platform_mcp.catalog()["research_tools"])
+        with self.assertRaises(HTTPException) as missing:
+            asyncio.run(platform_mcp.research("owner-a", "get_historical_cycles", {}))
+        self.assertEqual(missing.exception.status_code, 422)
+        self.assertIn("instrument_id", missing.exception.detail)
+
+    def test_extension_install_requires_reauthentication_and_private_input(self) -> None:
+        names = {item["function"]["name"] for item in platform_mcp.definitions()}
+        self.assertIn("mcp__finch__manage_extension", names)
+        with self.assertRaises(HTTPException) as unverified:
+            asyncio.run(platform_mcp.manage_extension("owner-a", "install_mcp_config"))
+        self.assertEqual(unverified.exception.status_code, 428)
+        with self.assertRaises(HTTPException) as missing:
+            asyncio.run(platform_mcp.manage_extension("owner-a", "install_mcp_config", reauth_valid=True))
+        self.assertEqual(missing.exception.status_code, 422)
 
     def test_local_paper_resources_are_owner_bound(self) -> None:
         main.initialize()

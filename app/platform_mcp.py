@@ -1,4 +1,4 @@
-"""Built-in, owner-bound MCP contract for the Finch workspace.
+"""Built-in, owner-bound MCP contract for the finfreedom workspace.
 
 The model chooses a named resource, never a SQL statement or arbitrary URL.
 Write operations are limited to user-authored state. Market observations and
@@ -14,8 +14,12 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from app import futu_trade, holdings, investment_memory as memory, investment_wiki as wiki, platform_workspace as workspace, security
+from app import ai_glossary, futu_trade, holdings, investment_memory as memory, investment_wiki as wiki, platform_workspace as workspace, security
+from app.ai_agent import TOOL_DEFINITIONS
 from app.mysql_db import connect
+
+RESEARCH_TOOLS = {item["function"]["name"]: item["function"] for item in TOOL_DEFINITIONS
+                  if item["function"]["name"] != "get_account_snapshot"}
 
 READABLE = {
     "cards": "右侧工作台卡片顺序、显示状态、自定义内容和附注",
@@ -54,6 +58,7 @@ READABLE = {
     "wiki_tree": "投资记忆目录；不读取历史原始会话",
     "wiki_file": "投资记忆 Markdown 文档；不读取历史原始会话",
     "memory": "按当前问题召回已归档记忆",
+    "glossary": "当前账户收藏词条、我的词条和最新新闻推荐词条",
 }
 WRITABLE = {
     "cards": "设置右栏顺序、显隐、宽度；创建或修改自定义卡片及内置卡片附注",
@@ -61,28 +66,54 @@ WRITABLE = {
     "holdings": "登记当前用户某币种的完整持仓快照，需带 expected_updated_at",
     "watchlist": "添加或移除自选标的",
     "wiki_file": "编辑当前用户的 Markdown 记忆文件，需带 expected_sha256",
+    "glossary": "创建、编辑（需带 expected_updated_at）、收藏、删除本人词条；或将新闻推荐词条编辑后收录",
 }
 
 
 def definitions() -> list[dict[str, Any]]:
     return [
         {"type": "function", "function": {"name": "mcp__finch__catalog",
-         "description": "列出 Finch 平台可读数据源、可写用户内容及所需参数。操作页面前先查询。",
+         "description": "列出 finfreedom 平台可读数据源、可写用户内容及所需参数。操作页面前先查询。",
          "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
         {"type": "function", "function": {"name": "mcp__finch__read",
          "description": "读取平台页面同源数据。resource 从 catalog 选取；params 可指定日期、市场、标的、分页。",
          "parameters": {"type": "object", "properties": {"resource": {"type": "string", "enum": list(READABLE)},
          "params": {"type": "object"}}, "required": ["resource"], "additionalProperties": False}}},
         {"type": "function", "function": {"name": "mcp__finch__write",
-         "description": "仅在用户要求创建或修改时写入本人内容：右栏卡片、日历、自选、持仓、wiki。先读取现状，使用版本/哈希防覆盖，写后再读验证。不能改行情、证据、凭据或下单。",
+         "description": "仅在用户要求创建或修改时写入本人内容：右栏卡片、日历、自选、持仓、wiki、AI 词条。先读取现状，使用版本/哈希防覆盖，写后再读验证。推荐词条须按用户编辑内容收录为本人词条。不能改行情、证据、凭据或下单。",
          "parameters": {"type": "object", "properties": {"resource": {"type": "string", "enum": list(WRITABLE)},
          "action": {"type": "string"}, "data": {"type": "object"}},
          "required": ["resource", "action", "data"], "additionalProperties": False}}},
+        {"type": "function", "function": {"name": "mcp__finch__prepare_holdings_import",
+         "description": "用户提供持仓文字、截图或要求导入前文持仓时，生成本人持仓核对草稿，不写入账本。缺少代码、份额或市值由工具在草稿中标明；有资料市值时份额可留空。可不传 text，工具会读取当前会话最近的持仓资料。返回核对链接。",
+         "parameters": {"type": "object", "properties": {
+             "currency": {"type": "string", "enum": list(holdings.CURRENCIES)},
+             "text": {"type": "string", "description": "用户提供的持仓原文；不传时使用当前会话资料"},
+             "image_id": {"type": "string", "description": "当前会话已保存的图片编号；有图片时可传"}},
+         "additionalProperties": False}}},
+        {"type": "function", "function": {"name": "mcp__finch__research",
+         "description": "按用户研究问题调用 finfreedom 专业投研工具；先查 catalog.research_tools 获取工具名称、必填参数与用途。缺少参数时由本工具返回要求。所有结果保留来源和证据，不执行交易。",
+         "parameters": {"type": "object", "properties": {
+             "name": {"type": "string", "enum": list(RESEARCH_TOOLS)},
+             "args": {"type": "object"}}, "required": ["name"], "additionalProperties": False}}},
+        {"type": "function", "function": {"name": "mcp__finch__manage_extension",
+         "description": "按用户明确要求安装公开 GitHub Skill，或安装当前消息附带的私密 MCP 配置。执行前工具会检查用户的重新验证状态；缺少来源或配置时由工具提示。私密配置绝不作为模型参数传入。",
+         "parameters": {"type": "object", "properties": {
+             "action": {"type": "string", "enum": ["install_skill_url", "install_mcp_config"]},
+             "source": {"type": "string", "description": "公开 GitHub Skill 仓库链接；只用于 install_skill_url"},
+             "name": {"type": "string", "description": "用户指定的 Skill 名称，可选"}},
+         "required": ["action"], "additionalProperties": False}}},
     ]
 
 
 def catalog() -> dict[str, Any]:
     return {"readable": READABLE, "writable": WRITABLE,
+            "research_tools": {name: {"description": spec["description"][:220],
+                                      "parameters": list(spec["parameters"].get("properties", {})),
+                                      "required": spec["parameters"].get("required", [])}
+                               for name, spec in RESEARCH_TOOLS.items()},
+            "workflow_tools": {"prepare_holdings_import": "从文字或图片生成待核对草稿，缺失字段由工具返回，绝不直接写入持仓",
+                               "manage_extension": "安装公开 GitHub Skill 或当前消息的私密 MCP 配置；工具检查重新验证与所需资料"},
             "card_actions": ["set_layout", "create_note", "update_note", "delete_note", "set_builtin_note"],
             "calendar_actions": ["create", "update", "delete", "acknowledge"],
             "account_scope": "owner-bound; owner_id is supplied by the trusted runtime, never the model",
@@ -161,6 +192,8 @@ async def read(owner_id: str, resource: str, params: dict[str, Any] | None = Non
         return memory.recall(owner_id, str(p.get("query", "")), limit=min(_bounded(p.get("limit"), 10, 20), 20))
     if resource == "memory_settings":
         return memory.get_settings(owner_id)
+    if resource == "glossary":
+        return ai_glossary.get_state(owner_id)
     if resource == "paper_local_accounts":
         broker = _paper_broker(owner_id)
         account_id = str(p.get("account_id") or "")
@@ -315,6 +348,89 @@ async def read(owner_id: str, resource: str, params: dict[str, Any] | None = Non
     raise HTTPException(404, "数据源不可用")
 
 
+async def prepare_holdings_import(owner_id: str, currency: str = "CNY", text: str | None = None,
+                                  image_id: str | None = None, session_id: str | None = None) -> dict[str, Any]:
+    if session_id:
+        session = memory.get_session(owner_id, session_id)
+    else:
+        session = None
+    if not text and not image_id and session:
+        for message in reversed(session["messages"][-12:]):
+            content = message.get("content", "")
+            if (message.get("role") in {"user", "assistant"} and len(content) > 80 and
+                    (len(re.findall(r"(?<!\d)\d{6}(?!\d)", content)) >= 2 or "持仓" in content)):
+                text = content
+                break
+    if not text and not image_id:
+        raise HTTPException(422, "缺少可识别的持仓资料。请粘贴持仓文字，或上传持仓截图。")
+    body = holdings.ImportPreviewInput(currency=currency, text=text if not image_id else None, image_id=image_id)
+    draft = await holdings.preview_import(owner_id, body)
+    saved = holdings.save_import_draft(owner_id, draft, session_id)
+    missing_code = sum(item["instrument_id"] is None for item in draft["positions"])
+    missing_quantity = sum(item["quantity"] is None for item in draft["positions"])
+    missing_value = sum(item["quantity"] is None and item["manual_value"] is None for item in draft["positions"])
+    return {"draft_id": saved["draft_id"], "currency": currency,
+            "count": len(draft["positions"]), "missing_code": missing_code,
+            "missing_quantity": missing_quantity, "missing_value": missing_value,
+            "warnings": draft["warnings"],
+            "review_url": f"#/holdings?currency={currency}&import=1&draft={saved['draft_id']}",
+            "saved": False, "message": "这是待核对草稿；缺少代码、或同时缺少份额与资料市值时需补填。用户在持仓页核对后才可保存。"}
+
+
+async def research(owner_id: str, name: str, args: dict[str, Any] | None = None,
+                   session_id: str | None = None) -> dict[str, Any]:
+    spec = RESEARCH_TOOLS.get(name)
+    if spec is None:
+        raise HTTPException(404, "研究工具不存在；请先读取 catalog.research_tools")
+    parameters = args if args is not None else {}
+    if not isinstance(parameters, dict):
+        raise HTTPException(422, "研究工具参数必须是对象")
+    missing = [key for key in spec["parameters"].get("required", []) if key not in parameters or parameters[key] in (None, "")]
+    if missing:
+        raise HTTPException(422, f"{name} 缺少参数：{', '.join(missing)}")
+    if name == "get_investment_memory":
+        return memory.recall(owner_id, str(parameters.get("query") or ""), session_id)
+    if name == "get_memory_entry":
+        return memory.get_entry(owner_id, str(parameters.get("entry_id") or ""))
+    from app.deerflow_worker import _make_tools
+    tools = _make_tools({"account_id": None, "account_snapshot": None})
+    return await tools.execute(name, parameters)
+
+
+async def manage_extension(owner_id: str, action: str, source: str | None = None,
+                           name: str | None = None, private_input: str | None = None,
+                           current_message: str | None = None,
+                           reauth_valid: bool = False) -> dict[str, Any]:
+    if not owner_id:
+        raise HTTPException(403, "缺少当前用户身份")
+    if not reauth_valid:
+        raise HTTPException(428, "安装扩展前请重新验证密码；完成后重新发送包含来源链接或配置的完整请求。")
+    from app import agent_extensions
+    if action == "install_skill_url":
+        supplied = re.search(r'(?:https?://)?github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', current_message or "")
+        if supplied is None:
+            raise HTTPException(422, "当前消息缺少公开 GitHub Skill 仓库链接，请提供链接。")
+        source = supplied.group(0)
+        try:
+            installed = await agent_extensions.install_skill_url(source, name)
+        except agent_extensions.ExtensionError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return {"action": action, "name": installed["name"],
+                "description": installed["description"],
+                "requested_tools": installed["requested_tools"], "installed": True}
+    if action == "install_mcp_config":
+        if not private_input:
+            raise HTTPException(422, "当前消息没有私密 MCP 配置，请粘贴 mcpServers JSON 后重试。")
+        try:
+            names = agent_extensions.save_mcp_group(agent_extensions.extract_mcp_config(private_input))
+            statuses = [await agent_extensions.probe_mcp(item) for item in names]
+        except agent_extensions.ExtensionError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return {"action": action, "connections": statuses,
+                "message": "配置已保存到服务端私有目录；凭据没有发送给模型或写入聊天记录。"}
+    raise HTTPException(422, "不支持的扩展操作")
+
+
 async def write(owner_id: str, resource: str, action: str, data: dict[str, Any]) -> Any:
     if resource not in WRITABLE or not isinstance(data, dict):
         raise HTTPException(422, "写入的数据源或内容无效")
@@ -385,6 +501,35 @@ async def write(owner_id: str, resource: str, action: str, data: dict[str, Any])
         return holdings.save_snapshot(owner_id, str(data.get("currency", "")), holdings.SnapshotInput.model_validate(data.get("snapshot", {})))
     if resource == "wiki_file" and action == "edit":
         return wiki.save_document(owner_id, str(data.get("path", "")), str(data.get("content", "")), str(data.get("expected_sha256", "")))
+    if resource == "glossary":
+        if action == "create":
+            return ai_glossary._upsert_term(owner_id, str(data.get("title", "")), str(data.get("definition", "")), bool(data.get("is_favorite", True)))
+        if action == "edit":
+            return ai_glossary.edit_term(owner_id, str(data.get("term_id", "")), str(data.get("title", "")), str(data.get("definition", "")), bool(data.get("is_favorite", True)), str(data.get("expected_updated_at", "")))
+        if action == "favorite":
+            with connect() as db:
+                result = db.execute("UPDATE ai_glossary_terms SET is_favorite=?,updated_at=? WHERE owner_id=? AND term_id=?",
+                                    (int(bool(data.get("is_favorite"))), ai_glossary.stamp(), owner_id, str(data.get("term_id", ""))))
+                if result.rowcount != 1:
+                    raise HTTPException(404, "我的词条不存在")
+                return ai_glossary._term(db.execute("SELECT * FROM ai_glossary_terms WHERE owner_id=? AND term_id=?",
+                                                    (owner_id, str(data.get("term_id", "")))).fetchone())
+        if action == "delete":
+            with connect() as db:
+                result = db.execute("DELETE FROM ai_glossary_terms WHERE owner_id=? AND term_id=?", (owner_id, str(data.get("term_id", ""))))
+            if result.rowcount != 1:
+                raise HTTPException(404, "我的词条不存在")
+            return {"status": "deleted"}
+        if action == "save_recommendation":
+            recommendation_id = str(data.get("recommendation_id", ""))
+            with connect() as db:
+                recommendation = db.execute("SELECT * FROM ai_glossary_recommendations WHERE recommendation_id=?", (recommendation_id,)).fetchone()
+            if not recommendation:
+                raise HTTPException(404, "推荐词条已更新")
+            return ai_glossary._upsert_term(owner_id, str(data.get("title", "")), str(data.get("definition", "")),
+                                             bool(data.get("is_favorite", True)), recommendation_id,
+                                             __import__("json").loads(recommendation["sources_json"]))
+        raise HTTPException(422, "词条操作须为 create/edit/favorite/delete/save_recommendation")
     if resource == "watchlist" and action in {"add", "remove"}:
         from app import main
         instrument = str(data.get("instrument_id", ""))

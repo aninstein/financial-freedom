@@ -43,11 +43,14 @@ def runtime_ready() -> bool:
 
 async def run_deerflow_research(
     *, run_id: str, owner_id: str, question: str, history: list[dict[str, str]],
-    max_tool_calls: int, timeout: float, account_id: str | None = None,
-    account_snapshot: dict[str, Any] | None = None,
+    max_tool_calls: int, timeout: float,
     session_id: str | None = None,
     image_data_url: str | None = None,
+    image_id: str | None = None,
     image_context_available: bool = False,
+    private_input: str | None = None,
+    current_message: str | None = None,
+    reauth_valid: bool = False,
     on_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     if not runtime_ready():
@@ -55,10 +58,13 @@ async def run_deerflow_research(
     payload = {
         "run_id": run_id, "owner_id": owner_id, "question": question,
         "history": history, "max_tool_calls": max_tool_calls,
-        "account_id": account_id, "account_snapshot": account_snapshot,
         "session_id": session_id,
+        "image_id": image_id,
         "image_data_url": image_data_url,
         "image_context_available": image_context_available,
+        "private_input": private_input,
+        "current_message": current_message,
+        "reauth_valid": reauth_valid,
         "stream": on_event is not None,
     }
 
@@ -94,7 +100,7 @@ async def run_deerflow_research(
     try:
         return await asyncio.wait_for(exchange(), timeout=timeout)
     except asyncio.TimeoutError as exc:
-        raise AgentUnavailable("DeerFlow 研究任务超时") from exc
+        raise AgentUnavailable("Agent 任务超时") from exc
     except (OSError, json.JSONDecodeError) as exc:
         raise AgentUnavailable("DeerFlow worker 连接失败") from exc
     except ValueError as exc:

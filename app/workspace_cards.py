@@ -11,10 +11,16 @@ def build_research_cards(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]
         instrument = detail.get('instrument_id')
         if kind == 'financial_data' and detail.get('symbol'):
             instrument = 'CN:' + detail['symbol']
-        elif kind in {'fund_holdings', 'fund_trade_disclosure'} and detail.get('fund_code'):
-            instrument = 'FUND:' + detail['fund_code']
+        elif kind in {'fund_holdings', 'fund_trade_disclosure', 'fund_research'} and (detail.get('fund_code') or detail.get('code')):
+            instrument = 'FUND:' + (detail.get('fund_code') or detail['code'])
         if kind in {'market_news','macro_liquidity','sector_rotation'}:
             cards[kind]={'kind':'context','context':kind,'title':item.get('title'),'evidence_ids':[item.get('evidence_id')]}
+            continue
+        if kind == 'fund_research' and detail.get('code'):
+            code = detail['code']
+            cards['fund:' + code] = {'kind': 'fund', 'code': code, 'name': detail.get('name'),
+                                    'latest_nav': detail.get('latest_nav'),
+                                    'evidence_ids': [item.get('evidence_id')]}
             continue
         if kind == 'index_analysis':
             index_id=detail.get('id')

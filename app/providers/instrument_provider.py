@@ -50,6 +50,50 @@ def reference_links(market: str, symbol: str):
     return [{'label':'东方财富数据中心','url':'https://data.eastmoney.com/'}]
 
 
+def _futu_cn_snapshot(symbol: str) -> dict[str, Any]:
+    """Read-only local OpenD snapshot with its own PE/PB labels and quote time."""
+    from futu import OpenQuoteContext, RET_OK
+    from app.providers.futu_provider import address, observed_time
+
+    if symbol.startswith(('4', '8', '92')):
+        raise ValueError('OpenD 未接入北交所股票快照')
+    code = ('SH' if symbol.startswith(('6', '9')) else 'SZ') + '.' + symbol
+    host, port = address()
+    ctx = OpenQuoteContext(host=host, port=port)
+    try:
+        ret, frame = ctx.get_market_snapshot([code])
+        if ret != RET_OK or getattr(frame, 'empty', True):
+            raise RuntimeError('OpenD 未返回股票快照')
+        raw = frame.iloc[0].to_dict()
+    finally:
+        ctx.close()
+
+    def finite(field: str, positive: bool = False) -> float | None:
+        try:
+            value = float(raw.get(field))
+            return value if math.isfinite(value) and (not positive or value > 0) else None
+        except (TypeError, ValueError):
+            return None
+
+    if finite('last_price', True) is None:
+        raise ValueError('OpenD 未返回有效最新价')
+    fields = [('股票代码', code), ('股票简称', str(raw.get('name') or '')),
+              ('最新价', finite('last_price', True)), ('今开', finite('open_price', True)),
+              ('最高', finite('high_price', True)), ('最低', finite('low_price', True)),
+              ('昨收', finite('prev_close_price', True)), ('成交量（股）', finite('volume')),
+              ('成交额（元）', finite('turnover')), ('换手率（%）', finite('turnover_rate'))]
+    if raw.get('equity_valid'):
+        fields += [('市盈率（富途口径）', finite('pe_ratio', True)),
+                   ('市盈率（TTM）', finite('pe_ttm_ratio', True)),
+                   ('市净率', finite('pb_ratio', True))]
+    source_time = observed_time(raw.get('update_time'), 'CN')
+    return {'state':'available','rows':[{'item':label,'value':value} for label,value in fields],
+            'source':'富途 OpenD · 只读市场快照',
+            'unit_note':'价格=元/股；成交量=股；金额=元；换手率=百分比；PE/PB 为倍数，富途 PE 与东方财富动态 PE 口径不同。',
+            'received_at':datetime.now(timezone.utc).isoformat(),'source_time':source_time,
+            'freshness':'unknown','note':'行情权限可能是延迟报价；以来源更新时间判断时效，不用作交易撮合价格。'}
+
+
 def _fetch(market: str, symbol: str, section: str) -> dict[str, Any]:
     import akshare as ak
     source, unit = 'AKShare · 东方财富公共网页数据', '保留来源字段单位；未标注时不推断'
@@ -59,6 +103,10 @@ def _fetch(market: str, symbol: str, section: str) -> dict[str, Any]:
             rows = _records(ak.stock_profile_cninfo(symbol=symbol))
             source = 'AKShare · 巨潮资讯公司概况'
         elif section == 'snapshot':
+            try:
+                return _futu_cn_snapshot(symbol)
+            except Exception:
+                pass  # OpenD may be unavailable; retain the public source fallback.
             import httpx
             fields = {'f57':'股票代码','f58':'股票简称','f43':'最新价','f46':'今开','f44':'最高','f45':'最低',
                       'f60':'昨收','f169':'涨跌额','f170':'涨跌幅（%）','f47':'成交量（手）','f48':'成交额（元）',
@@ -159,7 +207,8 @@ def _fetch(market: str, symbol: str, section: str) -> dict[str, Any]:
 async def _job(market, symbol, section):
     # Kill stalled scrapers instead of leaving unbounded blocking threads behind.
     async with SEMAPHORE:
-        allowed = {'PATH','LANG','LC_ALL','TZ','SSL_CERT_FILE','SSL_CERT_DIR','HTTP_PROXY','HTTPS_PROXY','NO_PROXY','http_proxy','https_proxy','no_proxy'}
+        allowed = {'PATH','HOME','LANG','LC_ALL','TZ','SSL_CERT_FILE','SSL_CERT_DIR','HTTP_PROXY','HTTPS_PROXY','NO_PROXY','http_proxy','https_proxy','no_proxy',
+                   'CONTAINER_RUNTIME','FUTU_OPEND_HOST','FUTU_OPEND_PORT'}
         env = {k:v for k,v in os.environ.items() if k in allowed}
         env['PYTHONIOENCODING'] = 'utf-8'
         process = await asyncio.create_subprocess_exec(sys.executable, '-m', 'app.providers.instrument_provider',
@@ -216,7 +265,7 @@ async def dossier(db: Callable, instrument_id: str, sections: list[str], refresh
         raise ValueError('资料类别不正确')
     results = await asyncio.gather(*(section_data(db,f'{market}:{symbol}',s,refresh) for s in dict.fromkeys(sections)))
     return {'instrument_id':f'{market}:{symbol}', 'sections':{r['section']:r for r in results}, 'links':reference_links(market,symbol),
-            'scope_note':'东方财富公开网页数据与持牌 Choice OpenAPI 是不同服务。部分市场资料需要额外数据权限。'}
+            'scope_note':'按分区查看实际来源：可能为富途只读快照或公开网页数据；公开网页与持牌 Choice OpenAPI 是不同服务。部分市场资料需要额外数据权限。'}
 
 
 if __name__ == '__main__':

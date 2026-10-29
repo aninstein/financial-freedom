@@ -1,4 +1,6 @@
-# Financial Freedom Project Charter
+# finfreedom Project Charter
+
+Product name: **finfreedom**. The finfreedom name and related trademarks belong to 利长安 ([lichangan.com](https://lichangan.com)). Legacy `finch` technical identifiers remain for compatibility with existing data and integrations.
 
 ## Product purpose
 

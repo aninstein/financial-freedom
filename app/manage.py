@@ -16,7 +16,7 @@ from app import security as auth
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Finch local identity management (interactive terminal only)')
+    parser = argparse.ArgumentParser(description='finfreedom local identity management (interactive terminal only)')
     parser.add_argument('operation', choices=['init-owner', 'reset-password', 'reset-mfa', 'verify-audit'])
     args = parser.parse_args()
     auth.initialize()

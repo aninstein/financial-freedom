@@ -24,6 +24,8 @@ TOKEN=os.getenv('QMT_GATEWAY_TOKEN','')
 ACCOUNT_ID=os.getenv('QMT_ACCOUNT_ID','')
 DATA=Path(os.getenv('QMT_GATEWAY_DATA_DIR',str(Path.home()/'.finch-qmt')))
 DB=DATA/('orders-'+hashlib.sha256(ACCOUNT_ID.encode()).hexdigest()[:16]+'.sqlite3')
+ORDER_STRATEGY='finfreedom'
+OWNED_ORDER_STRATEGIES={ORDER_STRATEGY,'Finch'}
 
 
 def connection():
@@ -55,7 +57,7 @@ async def lifespan(app):
     SDK.stop()
 
 
-app=FastAPI(title='Finch private miniQMT gateway',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan,dependencies=[Depends(authorize)])
+app=FastAPI(title='finfreedom private miniQMT gateway',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan,dependencies=[Depends(authorize)])
 
 
 class Order(BaseModel):
@@ -136,7 +138,7 @@ def submit(order:Order):
         from xtquant import xtconstant
         try:
             oid=SDK.order_stock(ACCOUNT,code(order),xtconstant.STOCK_BUY if order.side=='buy' else xtconstant.STOCK_SELL,
-                                order.quantity,xtconstant.FIX_PRICE,float(order.limit_price),'Finch',order.client_order_id)
+                                order.quantity,xtconstant.FIX_PRICE,float(order.limit_price),ORDER_STRATEGY,order.client_order_id)
             if not oid or oid<0:
                 with connection() as c: c.execute("UPDATE requests SET status='rejected' WHERE client_order_id=?",(order.client_order_id,))
                 raise HTTPException(422,'broker explicitly rejected order')
@@ -154,14 +156,14 @@ def orders():
         # Only this application's tagged orders leave the gateway.
         return {'orders':[{'broker_order_id':str(o.order_id),'broker_status':str(o.order_status),'instrument_id':'CN:'+o.stock_code.split('.')[0],
                            'quantity':o.order_volume,'filled_quantity':o.traded_volume,'filled_price':o.traded_price,
-                           'client_order_id':o.order_remark} for o in rows if o.strategy_name=='Finch']}
+                           'client_order_id':o.order_remark} for o in rows if o.strategy_name in OWNED_ORDER_STRATEGIES]}
 
 
 @app.post('/cancel')
 def cancel(body:Cancel):
     with LOCK:
         known=next((r for r in orders()['orders'] if r['broker_order_id']==body.broker_order_id),None)
-        if not known: raise HTTPException(404,'not a Finch order')
+        if not known: raise HTTPException(404,'not a finfreedom order')
         result=SDK.cancel_order_stock(ACCOUNT,int(body.broker_order_id))
         if result!=0: raise HTTPException(422,'broker rejected cancel request')
         return {'broker_order_id':body.broker_order_id,'broker_status':'撤单请求已发送，需查询券商结果'}

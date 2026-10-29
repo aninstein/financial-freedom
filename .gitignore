@@ -321,12 +321,20 @@ agentbuddy-lock.yaml
 *.db-shm
 *.db-wal
 
-# Vendor only the explicitly installed built-in skill and its install provenance.
+# Vendor selected project skills and their install provenance.
 !/.agents/
 /.agents/*
 !/.agents/skills/
 /.agents/skills/*
 !/.agents/skills/lark-doc/
 !/.agents/skills/lark-doc/**
+!/.agents/skills/install-futu-opend/
+!/.agents/skills/install-futu-opend/**
+!/.agents/skills/futuapi/
+!/.agents/skills/futuapi/**
+/.agents/skills/futuapi/**/__pycache__/
+/.agents/skills/futuapi/**/*.pyc
+!/.agents/skills/LEGAL_Futu_api_cn.md
+!/.agents/skills/LEGAL_Futu_api_en.md
 !/agentbuddy.yaml
 !/agentbuddy-lock.yaml

@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from app import agent_extensions as ext
 from app import deerflow_tools
-from app.deerflow_worker import _config, selected_tools
+from app.deerflow_worker import _config
 
 
 def skill_zip(path: str = 'repo/.claude/skills/stock-research-executor/SKILL.md') -> bytes:
@@ -73,16 +73,18 @@ class AgentExtensionTests(unittest.TestCase):
         ext.set_mcp_write_tools('research', True)
         self.assertIn('mcp__research__write', [x['function']['name'] for x in ext.mcp_tool_definitions()])
 
-    def test_chat_detects_management_before_model(self):
-        skill = ext.parse_chat_action('安装 skill "stock-research-executor"，来源 https://github.com/owner/repo')
-        self.assertEqual(skill[0], 'skill')
-        self.assertEqual(skill[1]['name'], 'stock-research-executor')
-        instruction = '使用 CLI 安装 skill "stock-research-executor"，分组 github.com/owner/repo；npm_config_registry=https://private.example'
-        self.assertEqual(ext.parse_chat_action(instruction)[0], 'skill')
-        mcp = ext.parse_chat_action('添加 MCP：{"mcpServers":{"research":{"command":"npx","args":["-y","pkg"]}}}')
-        self.assertEqual(mcp[0], 'mcp')
+    def test_private_mcp_input_is_redacted_without_selecting_a_route(self):
+        original = '添加 MCP：{"mcpServers":{"research":{"env":{"API_TOKEN":"secret"}}}}'
+        safe, private = ext.redact_private_chat_input(original)
+        self.assertEqual(private, original)
+        self.assertIn('添加 MCP', safe)
+        self.assertNotIn('secret', safe)
+        self.assertEqual(ext.extract_mcp_config(private)['mcpServers']['research']['env']['API_TOKEN'], 'secret')
+        plain, private = ext.redact_private_chat_input('请解释 mcpServers 是什么')
+        self.assertEqual(plain, '请解释 mcpServers 是什么')
+        self.assertIsNone(private)
         with self.assertRaises(ext.ExtensionError):
-            ext.parse_chat_action('请解释这个 mcpServers 配置：{"api_key":"secret"}')
+            ext.extract_mcp_config('请解释 mcpServers 是什么')
 
     def test_stdio_mcp_connects_and_calls_read_only_tool(self):
         ext.save_mcp_group({'mcpServers': {'fixture': {'command': 'python',
@@ -112,7 +114,7 @@ class AgentExtensionTests(unittest.TestCase):
         skill = ext.install_skill_zip(skill_zip())
         definitions = ext.skill_tool_definitions(True)
         deerflow_tools.register_extension_tools(definitions)
-        allowed = selected_tools('研究一只股票', None) | frozenset(x['function']['name'] for x in definitions)
+        allowed = frozenset(x['function']['name'] for x in definitions)
         env = {'DATA_DIR': self.tmp.name, 'MODEL_CONFIG_JSON':
                '[{"provider":"openai","model":"test","base_url":"http://127.0.0.1:9999/v1"}]',
                'PRIMARY_MODEL': 'test'}

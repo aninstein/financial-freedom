@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { holdingValidationIssue, isHoldingsImportIntent } from '../prototype/holdings.js';
+import { holdingValidationIssue } from '../prototype/holdings.js';
 
 test('a negative screenshot return is valid and a missing fund code is identified', () => {
   const positions = [
@@ -16,8 +16,8 @@ test('a negative screenshot return is valid and a missing fund code is identifie
   assert.equal(holdingValidationIssue(positions), null);
 });
 
-test('adding a screenshot holding routes to the import draft', () => {
-  assert.equal(isHoldingsImportIntent('帮我把这个黄金持仓加入我的持仓'), true);
-  assert.equal(isHoldingsImportIntent('把这张截图导入我的持仓'), true);
-  assert.equal(isHoldingsImportIntent('分析我的黄金持仓'), false);
+test('a text holding can use a stated value without share count', () => {
+  const position = { instrument_id: 'FUND:018044', name: '示例基金', asset_class: 'fund', quantity: null, manual_value: 5162.81 };
+  assert.equal(holdingValidationIssue([position]), null);
+  assert.equal(holdingValidationIssue([{ ...position, manual_value: null }]).field, 'manual_value');
 });

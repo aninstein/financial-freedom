@@ -83,6 +83,9 @@ const paths = {
 export function icon(name, cls = "") {
   return `<svg class="${cls}" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${paths[name] || paths.spark}"/></svg>`;
 }
+export function brandMark(cls = "") {
+  return `<img class="brand-logo ${cls}" src="/assets/finfreedom-mark.svg" alt="" />`;
+}
 export const markets = {
   CN: "A 股 / 创业板 / 科创板",
   HK: "港股",
@@ -171,6 +174,8 @@ export function resultCards(cards = []) {
         return `<a class="result-card" href="#/${{ market_news: "news", macro_liquidity: "liquidity", sector_rotation: "sectors" }[card.context] || "chat"}"><div class="result-card-head"><strong>${esc(card.title)}</strong>${icon("arrow")}</div><div class="result-foot"><span>来源与数据状态</span><span>打开研究详情</span></div></a>`;
       if (card.kind === "index")
         return `<a class="result-card" href="#/indices/${encodeURIComponent(card.instrument_id)}"><div class="result-card-head"><strong>${esc(card.name)}</strong>${icon("arrow")}</div><div class="result-price">${number(card.last_close)}<small>点</small></div><div class="result-foot"><span>日线 ${esc(card.last_bar || "暂无")}</span><span>打开指数分析</span></div></a>`;
+      if (card.kind === "fund")
+        return `<a class="result-card" href="#/funds/${encodeURIComponent(card.code)}"><div class="result-card-head"><strong>${esc(card.name || card.code)}</strong>${icon("arrow")}</div><div class="result-price">${number(card.latest_nav?.nav, 4)}<small>单位净值</small></div><div class="result-foot"><span>${esc(card.latest_nav?.date || "暂无净值日期")}</span><span>打开基金分析</span></div></a>`;
       if (card.kind === "cycles")
         return `<a class="result-card" href="${card.instrument_id.startsWith("INDEX:") ? "#/indices/" + encodeURIComponent(card.instrument_id) : stockHref(card.instrument_id) + "?tab=cycles"}"><div class="result-card-head"><strong>${esc(card.instrument_id)} 历史周期</strong>${icon("arrow")}</div><div class="result-foot"><span>${esc(card.last_bar || "样本不足")}</span><span>查看样本统计</span></div></a>`;
       if (card.kind === "instrument")
@@ -203,7 +208,7 @@ function inline(value) {
       out += safe
         ? `<a href="${esc(p[2])}" ${p[2].startsWith("http") ? 'target="_blank" rel="noopener noreferrer"' : ""}>${esc(p[1])}</a>`
         : esc(p[1]);
-    } else out += `<a href="${stockHref(t)}">${esc(t)}</a>`;
+    } else out += `<a href="${t.startsWith('FUND:') ? '#/funds/' + encodeURIComponent(t.slice(5)) : stockHref(t)}">${esc(t)}</a>`;
     last = m.index + t.length;
   }
   return out + esc(s.slice(last));

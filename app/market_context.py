@@ -65,7 +65,7 @@ def _official_page(url):
     if parsed.scheme!='https' or parsed.hostname!='www.pbc.gov.cn' or not parsed.path.startswith('/zhengcehuobisi/'):
         raise ValueError('非允许的央行公告来源')
     with httpx.Client(timeout=4,follow_redirects=False) as client:
-        response=client.get(url,headers={'User-Agent':'Mozilla/5.0 Finch research personal use'})
+        response=client.get(url,headers={'User-Agent':'Mozilla/5.0 finfreedom research personal use'})
         response.raise_for_status()
         if len(response.content)>2_000_000:raise ValueError('公告超出大小限制')
         page=TextPage(); page.feed(response.content.decode('utf-8',errors='replace'));return page
@@ -122,9 +122,12 @@ def fetch_context(kind,key):
     import akshare as ak
     if kind=='rotation':
         if key not in {'今日','5日','10日'}:raise ValueError('不支持的轮动周期')
-        full=_records(ak.stock_sector_fund_flow_rank(indicator=key,sector_type='行业资金流'))
+        # Use one industry taxonomy for all windows. Eastmoney's push2 endpoint can
+        # be unreachable from the deployed network; THS has independent 1/5/10d data.
+        full=_ths_rotation_rows(_records(ak.stock_fund_flow_industry(
+            symbol={'今日':'即时','5日':'5日排行','10日':'10日排行'}[key])),key)
         rows=full[:1000]
-        return {'rows':rows,'state':'available' if rows else 'empty','source':f'AKShare · 东方财富行业资金流 · {key}',
+        return {'rows':rows,'state':'available' if rows else 'empty','source':f'AKShare · 同花顺行业资金流 · {key}',
                 'source_row_count':len(full),'sample_truncated':len(full)>1000,'source_time':None,'received_at':stamp(),'freshness':'unknown','note':'行业涨跌和成交分类资金估计；源未提供明确行情时点，接收时间不是交易所时点。'}
     if kind not in {'news_cls','news_em'}:raise ValueError('不支持的数据源')
     raw=_records(ak.stock_info_global_cls(symbol='全部') if kind=='news_cls' else ak.stock_info_global_em())
@@ -202,6 +205,19 @@ def finite(value):
     except (ValueError,TypeError):return None
 
 
+def _ths_rotation_rows(rows,key):
+    """Normalize THS returns; its net flow is not Eastmoney's 主力净流入."""
+    result=[]
+    for row in rows:
+        name=row.get('行业')
+        change=finite(str(row.get('行业-涨跌幅' if key=='今日' else '阶段涨跌幅','')).rstrip('%'))
+        net=finite(row.get('净额'))
+        if not name or change is None:continue
+        result.append({'名称':name,key+'涨跌幅':change,'资金净额-元':net*100_000_000 if net is not None else None,
+                       '资金来源':'同花顺','资金口径':'行业资金净额；非东方财富主力净流入'})
+    return result
+
+
 async def sector_rotation(db,refresh=False):
     from app.research_data import collect,cached
     windows=['今日','5日','10日']
@@ -217,6 +233,7 @@ async def sector_rotation(db,refresh=False):
         for w in windows:
             raw=maps[w].get(name,{})
             row['windows'][w]={'return_percent':finite(raw.get(w+'涨跌幅')),'main_net_yuan':finite(raw.get(w+'主力净流入-净额')),
+                               'fund_net_yuan':finite(raw.get('资金净额-元')),
                                'main_net_ratio_percent':finite(raw.get(w+'主力净流入-净占比')),'rank':ranks[w].get(name)}
         r1,r5,r10=(ranks[w].get(name) for w in windows)
         row['rank_improvement']=r5-r1 if row['complete'] else None
@@ -245,7 +262,7 @@ async def sector_rotation(db,refresh=False):
             'previous_capture_date':previous['observed_date'] if previous else None,
             'history':[{'capture_date':h['observed_date'],'received_at':h['received_at'],'leaders':[r['name'] for r in json.loads(h['payload']) if r['complete']][:5]} for h in history],
             'method':'以今日/5日/10日均有收益的共同板块集合按收益降序排名；5日排名减今日排名为跨窗口改善，变化至少max(3,15%板块数)标改善/转弱。三期均在前30%为持续领先；仅描述相对强弱，不是完整交易策略。',
-            'note':'单源最多1000行，排名仅针对三个窗口的共同样本，不代表全部行业。今日和5/10日窗口重叠，跨窗口排名差不是历史名次变化。跨日变化只用本机不同采集日快照且相同板块集合；采集日不是来源交易日。源时点未知的窗口可能不同步，不做因果或收益承诺。'}
+            'note':'同花顺行业口径，资金净额单位元，不等同东方财富主力净流入；单源最多1000行，排名仅针对三个窗口的共同样本，不代表全部行业。今日和5/10日窗口重叠，跨窗口排名差不是历史名次变化。跨日变化只用本机不同采集日快照且相同板块集合；采集日不是来源交易日。源时点未知的窗口可能不同步，不做因果或收益承诺。'}
 
 
 async def refresh_context(db):

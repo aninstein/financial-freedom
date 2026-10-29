@@ -16,9 +16,7 @@ from typing import Any, Callable
 
 from langchain_core.tools import StructuredTool
 
-from app.ai_agent import TOOL_DEFINITIONS
 from app import agent_extensions
-from app import investment_memory as memory
 
 
 @dataclass
@@ -28,6 +26,11 @@ class RunState:
     run_id: str
     allowed: frozenset[str]
     max_calls: int
+    session_id: str | None = None
+    image_id: str | None = None
+    private_input: str | None = None
+    current_message: str | None = None
+    reauth_valid: bool = False
     skill_names: frozenset[str] = frozenset()
     progress: Callable[[dict[str, Any]], None] | None = None
     activated_skills: set[str] = field(default_factory=set)
@@ -57,21 +60,13 @@ def _execute(name: str, args: dict[str, Any]) -> str:
     with state.lock:
         if state.calls >= state.max_calls:
             print(f"finch deerflow tool_limit run={state.run_id} name={name}", file=sys.stderr, flush=True)
-            return json.dumps({"error": "达到本轮工具调用上限，请使用已有证据给出操作建议"}, ensure_ascii=False)
+            return json.dumps({"error": "达到本轮工具调用上限，请基于已有结果回答并说明未完成的部分"}, ensure_ascii=False)
         state.calls += 1
         print(f"finch deerflow tool run={state.run_id} number={state.calls} name={name}", file=sys.stderr, flush=True)
     if state.progress:
         state.progress({"type": "tool_start", "name": name, "number": state.calls})
     try:
-        if name == 'get_investment_memory':
-            try:
-                result = memory.recall(state.owner_id, str(args.get('query') or ''), limit=10)
-            except Exception:
-                result = {'items': [], 'memory_status': 'degraded',
-                          'notice': '投资记忆当前不可用；不要声称记得用户历史偏好。'}
-        elif name == 'get_memory_entry':
-            result = memory.get_entry(state.owner_id, str(args.get('entry_id') or ''))
-        elif name == 'activate_skill':
+        if name == 'activate_skill':
             chosen = str(args.get('name', ''))
             if chosen not in state.skill_names:
                 raise ValueError('Skill 未安装')
@@ -84,13 +79,21 @@ def _execute(name: str, args: dict[str, Any]) -> str:
             result = {'name': chosen, 'path': args.get('path'),
                       'content': agent_extensions.read_skill(chosen, str(args.get('path', '')))[:16000]}
         elif name.startswith('mcp__'):
+            if name in {'mcp__finch__prepare_holdings_import', 'mcp__finch__research'}:
+                args = {**args, 'session_id': state.session_id}
+                if name == 'mcp__finch__prepare_holdings_import' and state.image_id:
+                    args['image_id'] = state.image_id
+            elif name == 'mcp__finch__manage_extension':
+                args = {**args, 'private_input': state.private_input,
+                        'current_message': state.current_message,
+                        'reauth_valid': state.reauth_valid}
             result = asyncio.run(agent_extensions.call_mcp_tool(name, args, state.owner_id))
             if not result.get('isError'):
                 evidence = state.tools._evidence('mcp_tool', f"{result['server']} / {result['tool']}",
                                                  f"MCP: {result['server']}", None, result)
                 result = {'evidence': [evidence], **result}
         else:
-            result = asyncio.run(state.tools.execute(name, args))
+            raise PermissionError('未提供此工具；平台能力只能经已授权 MCP 调用')
     except Exception as exc:
         result = {"error": f"工具不可用：{type(exc).__name__}"}
     if state.progress:
@@ -113,11 +116,6 @@ def _make_tool(definition: dict[str, Any]) -> StructuredTool:
         args_schema=spec["parameters"],
         infer_schema=False,
     )
-
-
-for _definition in TOOL_DEFINITIONS:
-    _tool = _make_tool(_definition)
-    globals()[_tool.name] = _tool
 
 
 def register_extension_tools(definitions: list[dict[str, Any]]) -> None:

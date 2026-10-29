@@ -1,0 +1,5 @@
+interface:
+  display_name: "富途 API 联通测试"
+  short_description: "显式调用官方脚本检查 OpenD 接口"
+policy:
+  allow_implicit_invocation: false

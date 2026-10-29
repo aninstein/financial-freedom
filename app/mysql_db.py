@@ -54,7 +54,7 @@ class Cursor:
 
 
 _LONG_TEXT = {
-    "payload", "content", "answer", "evidence_json", "risk_result", "parameters",
+    "payload", "content", "answer", "evidence_json", "risk_result", "parameters", "sources_json",
     "metrics", "request_json", "result_json", "body", "text", "note", "error",
     "last_error", "excerpt", "target", "device", "filename", "title",
 }

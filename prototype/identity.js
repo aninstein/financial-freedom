@@ -1,5 +1,5 @@
 import { request, configureSecurity } from "./api.js";
-import { esc, icon, showDialog, notify, time, empty } from "./ui.js";
+import { esc, icon, brandMark, showDialog, notify, time, empty } from "./ui.js";
 let identity = null,
   lastActivity = Date.now(),
   pendingReady = null,
@@ -28,11 +28,11 @@ function field(id, label, type = "text", autocomplete = "off") {
   return `<div class="form-row"><label class="field-label" for="${id}">${label}</label><div class="secret-field"><input class="field" id="${id}" name="${id}" type="${type}" autocomplete="${autocomplete}" ${type === "password" ? 'maxlength="256"' : ""} />${type === "password" ? `<button class="icon-button reveal-secret" type="button" data-reveal="${id}" aria-label="显示${label}">${icon("eye")}</button>` : ""}</div></div>`;
 }
 function frame(title, subtitle, body) {
-  return `<main class="identity-shell"><section class="identity-intro"><a class="brand" href="#/chat"><div class="brand-mark">${icon("spark")}</div>Finch <span>PRIVATE RESEARCH</span></a><div><p class="eyebrow">你的私人投研空间</p><h1>研究市场，<br>掌握自己的判断。</h1><p>行情、公司资料与策略研究，<br>只向你的账户开放。</p></div><p class="identity-security">密码登录 · 私人数据访问控制</p></section><section class="identity-form"><p class="eyebrow">FINCH / IDENTITY</p><h2>${esc(title)}</h2><p class="field-help">${esc(subtitle)}</p>${body}<p class="identity-note">资金账户与 Agent 配置保存在服务端。公共注册已关闭。</p></section></main>`;
+  return `<main class="identity-shell"><section class="identity-intro"><a class="brand" href="#/chat"><div class="brand-mark">${brandMark()}</div>Finfreedom <span>PRIVATE RESEARCH</span></a><div><p class="eyebrow">你的私人投研空间</p><h1>研究市场，<br>掌握自己的判断。</h1><p>行情、公司资料与策略研究，<br>只向你的账户开放。</p></div><p class="identity-security">密码登录 · 私人数据访问控制</p></section><section class="identity-form"><p class="eyebrow">FINFREEDOM / IDENTITY</p><h2>${esc(title)}</h2><p class="field-help">${esc(subtitle)}</p>${body}<p class="identity-note">资金账户与 Agent 配置保存在服务端。公共注册已关闭。</p></section></main>`;
 }
 function showRoot() {
   authView += 1;
-  document.title = "身份验证 — Finch";
+  document.title = "身份验证 — Finfreedom";
   workspace().hidden = true;
   root().hidden = false;
   document.querySelectorAll("dialog[open]").forEach((d) => d.close());

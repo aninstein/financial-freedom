@@ -281,7 +281,7 @@ def save_mcp_group(raw: dict) -> list[str]:
     names = []
     for name, item in group.items():
         if name == 'finch':
-            raise ExtensionError('finch 是内置平台 MCP，不能覆盖')
+            raise ExtensionError('finfreedom 内置平台 MCP（技术标识 finch）不能覆盖')
         normalized = _validate_mcp(name, item)
         configs[name] = normalized
         names.append(name)
@@ -291,8 +291,9 @@ def save_mcp_group(raw: dict) -> list[str]:
 
 def list_mcp() -> list[dict]:
     rows = [{'name': 'finch', 'type': 'builtin', 'enabled': True, 'command': None,
-             'url': None, 'allow_write_tools': True, 'tool_count': 3,
-             'tools': ['catalog', 'read', 'write'], 'status': 'connected', 'managed': True}]
+             'url': None, 'allow_write_tools': True, 'tool_count': 6,
+             'tools': ['catalog', 'read', 'write', 'prepare_holdings_import', 'research', 'manage_extension'],
+             'status': 'connected', 'managed': True}]
     for name, item in _load_mcp().items():
         if name == 'finch':
             continue
@@ -402,13 +403,24 @@ async def call_mcp_tool(composite_name: str, arguments: dict, owner_id: str | No
                        ('MYSQL_HOST', 'MYSQL_PORT', 'MYSQL_USER', 'MYSQL_DATABASE',
                         'MYSQL_PASSWORD_FILE', 'MYSQL_PASSWORD', 'DATA_DIR', 'CONTAINER_RUNTIME',
                         'FUTU_OPEND_HOST', 'FUTU_OPEND_PORT', 'FUTU_TRADE_ENABLED',
-                        'FUTU_TRADE_SECURITY_FIRM', 'FUTU_REAL_ACCOUNT_IDS')
+                        'FUTU_TRADE_SECURITY_FIRM', 'FUTU_REAL_ACCOUNT_IDS',
+                        'MODEL_CONFIG_JSON', 'PRIMARY_MODEL', 'MODEL_TIMEOUT_SECONDS')
                        if key in os.environ}
+        try:
+            model_configs = json.loads(runtime_env.get('MODEL_CONFIG_JSON', '[]'))
+        except (ValueError, TypeError):
+            model_configs = []
+        if isinstance(model_configs, list):
+            for config in model_configs:
+                key = config.get('api_key_env') if isinstance(config, dict) else None
+                if isinstance(key, str) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key) and key in os.environ:
+                    runtime_env[key] = os.environ[key]
         item = {'type': 'stdio', 'command': 'python', 'args': ['-m', 'app.platform_mcp_server'],
                 'env': {**runtime_env, 'FINCH_MCP_OWNER_ID': owner_id}}
     else:
         item = _load_mcp()[server]
-    async with asyncio.timeout(30):
+    timeout_seconds = 90 if composite_name in {'mcp__finch__research', 'mcp__finch__manage_extension'} else 75 if composite_name == 'mcp__finch__prepare_holdings_import' else 30
+    async with asyncio.timeout(timeout_seconds):
         async with AsyncExitStack() as stack:
             session = await _mcp_session(item, stack)
             result = await session.call_tool(tool_name, arguments)
@@ -418,41 +430,27 @@ async def call_mcp_tool(composite_name: str, arguments: dict, owner_id: str | No
             'content': content, **({'error': content[:800]} if data.get('isError') else {})}
 
 
-def parse_chat_action(question: str) -> tuple[str, object] | None:
-    """Recognize an owner's direct installation request before sending it to a model."""
-    text = question.strip()
-    if 'mcpServers' in text:
-        if not (text.startswith('{') or re.search(r'安装|添加|配置|接入|连接|install|add', text, re.I)):
-            raise ExtensionError('MCP 配置请直接提交安装请求；配置内容不会发送给模型')
-        decoder = json.JSONDecoder()
-        for match in re.finditer(r'\{', text):
-            try:
-                value, _ = decoder.raw_decode(text[match.start():])
-                if isinstance(value, dict) and 'mcpServers' in value:
-                    return 'mcp', value
-            except json.JSONDecodeError:
-                continue
-        raise ExtensionError('未找到有效的 mcpServers JSON；密钥不会发送给模型')
-    if re.search(r'安装|添加|install', text, re.I) and 'github.com/' in text:
-        source = re.search(r'(?:https?://)?github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', text)
-        if source:
-            named = re.search(r'(?:--skill\s+|skill\s+["“])([a-z0-9-]+)', text, re.I)
-            return 'skill', {'source': source.group(0), 'name': named.group(1) if named else None}
-    if 'npm_config_registry' in text:
-        raise ExtensionError('安装请求缺少可识别的公开 Skill 仓库链接；配置内容不会发送给模型')
-    return None
+def redact_private_chat_input(question: str) -> tuple[str, str | None]:
+    """Hide configuration secrets from model prompts, chat history and run logs.
+
+    This only protects input data. It never chooses an action or a tool.
+    """
+    key = re.search(r'["\']mcpServers["\']\s*:', question)
+    if key:
+        prefix = question[:key.start()].rsplit('{', 1)[0].strip()
+        return ((prefix + '\n' if prefix else '') +
+                '[用户附加了一份私密 MCP 配置。配置内容仅供扩展管理工具读取，模型不可见。]'), question
+    redacted = re.sub(r'(npm_config_registry\s*=\s*)[^\s;,]+', r'\1[已隐藏]', question, flags=re.I)
+    return redacted, question if redacted != question else None
 
 
-async def perform_chat_action(action: tuple[str, object]) -> tuple[str, str]:
-    kind, data = action
-    if kind == 'skill':
-        result = await install_skill_url(data['source'], data.get('name'))
-        dependencies = ('\n\n此 Skill 声明需要：' + '、'.join(result['requested_tools']) +
-                        '。这些权限不会因安装而自动开启；请在设置页检查可用工具与 MCP 连接。') if result['requested_tools'] else ''
-        return f"安装 Skill：{result['name']}", (f"已安装 **{result['name']}**，并显示在「数据与模型 → Skills」。\n\n"
-                f"元数据描述：{result['description']}{dependencies}\n\n"
-                "后续可直接要求我按此 Skill 的说明检查配置；对话会先读取完整 SKILL.md 和相关参考文件。Skill 内的脚本不会自动执行。")
-    names = save_mcp_group(data)
-    statuses = [await probe_mcp(name) for name in names]
-    lines = [f"- **{item['name']}**：{'已连接' if item['status'] == 'connected' else '连接失败'}，发现 {item['tool_count']} 个工具。" for item in statuses]
-    return '添加 MCP 连接', 'MCP 配置已保存到私有目录；凭据没有发送给模型或写入研究记录。\n' + '\n'.join(lines) + '\n可在「数据与模型 → MCP」查看状态；聊天只会调用标注为只读的工具。'
+def extract_mcp_config(question: str) -> dict:
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r'\{', question):
+        try:
+            value, _ = decoder.raw_decode(question[match.start():])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict) and 'mcpServers' in value:
+            return value
+    raise ExtensionError('当前消息没有有效的 mcpServers JSON，请粘贴配置后重试')

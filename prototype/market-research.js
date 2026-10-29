@@ -222,8 +222,8 @@ export async function renderFlows(r, signal, ui) {
   ui.setPage(
     ui.page(
       ui.heading(
-        "资金与基金披露",
-        "分别看来源估计资金、基金定期披露和数据覆盖。",
+        "资金流向",
+        "查看大盘成交分类、行业主力资金和北向收盘后数据。",
         `<button class="button" data-action="refresh-flow">${icon("refresh")}重新采集</button><button class="button primary" data-action="ask" data-question="分析沪深大盘近期资金历史，并明确北向资金、行业资金和基金披露的覆盖缺口。">${icon("spark")}询问 Agent</button>`,
       ) +
         panel(
@@ -231,7 +231,7 @@ export async function renderFlows(r, signal, ui) {
           `<div class="metrics-list">${Object.entries(d.coverage || {})
             .map(
               ([key, value]) =>
-                `<div class="metric-line"><span>${{ market: "大盘", stock: "个股", sector: "行业", fund: "公募基金", northbound: "北向资金" }[key]}</span><strong>${esc(value)}</strong></div>`,
+                `<div class="metric-line"><span>${{ market: "大盘", stock: "个股", sector: "行业", northbound: "北向资金" }[key]}</span><strong>${esc(value)}</strong></div>`,
             )
             .join(
               "",
@@ -247,14 +247,53 @@ export async function renderFlows(r, signal, ui) {
           }) +
             `<div class="table-footer"><span>${rows.length} 条缓存 · 第 ${page} 页</span>${page > 1 ? `<a class="button small" href="#/flows?page=${page - 1}">上一页</a>` : ""}${start + 20 < rows.length ? `<a class="button small" href="#/flows?page=${page + 1}">下一页</a>` : ""}</div>`,
         ) +
-        panel(
-          "采集基金持仓披露",
-          `<p class="field-help">每次1至5只中国公募基金，结果逐只缓存。基金公司定期披露存在时滞，不代表基金实时操作。</p><form id="fund-collect-form" class="section-gap"><div class="form-grid"><div class="form-row"><label class="field-label" for="fund-codes">基金代码</label><input id="fund-codes" class="field" name="codes" placeholder="例如 000001, 110022" required maxlength="80" aria-describedby="fund-collect-error"></div><div class="form-row"><label class="field-label" for="fund-year">披露年份</label><input id="fund-year" class="field" type="number" name="year" min="2000" max="${new Date().getFullYear()}" value="${new Date().getFullYear()}" required></div></div><p class="form-error" id="fund-collect-error" role="alert"></p><button type="submit" class="button primary">采集披露</button></form><div id="fund-collect-results" aria-live="polite"></div>`,
-        ),
+        panel("行业资金流入排行", `<p class="field-help">${esc(d.sectors?.note || d.sectors?.error || "暂无来源说明")}</p><div class="table-scroll section-gap"><table class="data-table"><thead><tr><th>行业</th><th>涨跌幅</th><th>${esc(d.sectors?.flow_metric || "资金净额")} · 元</th><th>净占比</th></tr></thead><tbody>${(d.sectors?.rows || []).map((x) => `<tr><td>${esc(x.name)}</td><td class="mono ${tone(x.change_percent)}">${percent(x.change_percent)}</td><td class="mono ${tone(x.net_flow_yuan)}">${number(x.net_flow_yuan, 0)}</td><td class="mono">${percent(x.main_net_ratio_percent)}</td></tr>`).join("") || '<tr><td colspan="4">行业资金暂不可用</td></tr>'}</tbody></table></div><p class="field-help">${esc(d.sectors?.source || "来源未取得")} · ${esc(d.sectors?.state || "等待")} · 接收 ${time(d.sectors?.received_at)}</p>`)+
+        panel("北向资金 · 收盘后披露", `<p class="field-help">${esc(d.northbound?.note || d.northbound?.error || "暂无来源说明")}</p><div class="table-scroll section-gap"><table class="data-table"><thead><tr><th>日期</th><th>成交净买额 · 来源原值</th><th>买入 / 卖出 · 来源原值</th><th>成交额 · 来源原值</th><th>成交笔数</th></tr></thead><tbody>${(d.northbound?.rows || []).map((x) => `<tr><td>${esc(x.date)}</td><td class="mono ${tone(x.net_buy)}">${number(x.net_buy)}</td><td class="mono">${number(x.buy)} / ${number(x.sell)}</td><td class="mono">${number(x.turnover)}</td><td class="mono">${number(x.deal_count,0)}</td></tr>`).join("") || '<tr><td colspan="5">北向历史暂不可用</td></tr>'}</tbody></table></div><p class="field-help">${esc(d.northbound?.state || "等待")} · 接收 ${time(d.northbound?.received_at)}</p>`),
     ),
   );
 }
+
+const fundHref = (code) => "#/funds/" + encodeURIComponent(code);
+const fundMetric = (label, value) => `<div class="metric-line"><span>${esc(label)}</span><strong>${esc(value || "—")}</strong></div>`;
+export async function renderFunds(r, signal, ui) {
+  if (r.id) {
+    const d = await request("/research/funds/" + encodeURIComponent(r.id), {signal, timeout: 35000});
+    if (signal.aborted) return;
+    const basic = d.basic || {}, nav = d.latest_nav || {}, history = d.nav_history || [];
+    const weights = (d.holdings || []).filter((x) => x.weight_percent != null).map((x) => Number(x.weight_percent)).filter(Number.isFinite);
+    const topWeight = weights.reduce((sum, x) => sum + x, 0);
+    const allocation = d.asset_allocation || {};
+    ui.setPage(ui.page(ui.heading(esc(d.name || r.id), `${esc(d.code)} · ${esc(d.fund_type || "类型待核实")} · ${esc(d.venue || "交易场所待核实")}`,
+      `<button class="button" data-action="refresh-fund" data-code="${esc(d.code)}">${icon("refresh")}同步详情</button><button class="button primary" data-action="ask" data-question="分析基金 ${esc(d.code)} 的历史收益、经理、费用、最新披露持仓集中度与风险；逐项引用数据日期，并说明净值估算和申购状态的缺口。">${icon("spark")}询问 Agent</button>`) +
+      `<a class="text-link" href="#/funds">← 返回基金目录</a>${d.error ? `<div class="alert section-gap">${esc(d.error)}</div>` : ""}` +
+      `<div class="stat-grid section-gap">${stat("最近公布单位净值", number(nav.nav, 4), nav.date || "暂无")}${stat("净值日涨跌", `<span class="${tone(nav.daily_change_percent)}">${percent(nav.daily_change_percent)}</span>`, "按最近公布净值")}${stat("近一年收益", `<span class="${tone(d.returns_percent?.["1y"])}">${percent(d.returns_percent?.["1y"])}</span>`, "来源阶段收益")}${stat("前十大披露持仓占比", weights.length ? percent(topWeight) : "—", d.holdings_report || "暂无披露")}${d.venue === "场内" ? stat("场内行情快照", number(d.exchange_quote?.last, 4), d.exchange_quote?.source_time ? `行情 ${time(d.exchange_quote.source_time)}` : "行情时点未核实") + stat("场内涨跌幅", `<span class="${tone(d.exchange_quote?.change_percent)}">${percent(d.exchange_quote?.change_percent)}</span>`, "与基金净值分开") : ""}</div>`+
+      panel("收益与净值", `<div class="metrics-list">${[["近1月", "1m"],["近3月", "3m"],["近6月", "6m"],["近1年", "1y"]].map(([label, key]) => fundMetric(label, percent(d.returns_percent?.[key]))).join("")}</div><p class="field-help section-gap">${esc(d.estimate_note || "当日估算来源未提供")}</p><div class="table-scroll section-gap"><table class="data-table"><thead><tr><th>净值日期</th><th>单位净值</th><th>当日涨跌</th></tr></thead><tbody>${history.slice(-30).reverse().map((x) => `<tr><td>${esc(x.date)}</td><td class="mono">${number(x.nav,4)}</td><td class="mono ${tone(x.daily_change_percent)}">${percent(x.daily_change_percent)}</td></tr>`).join("") || '<tr><td colspan="3">暂无历史净值</td></tr>'}</tbody></table></div><p class="field-help">展示最近30条 / 已同步${history.length}条历史净值；单位净值不是ETF盘中成交价。</p>`)+
+      panel("净值风险统计", `<div class="metrics-list">${fundMetric("净值观测数",number(d.analysis?.observations,0))}${fundMetric("年化净值波动",percent(d.analysis?.volatility_percent))}${fundMetric("样本最大回撤",percent(d.analysis?.max_drawdown_percent))}${fundMetric("统计区间",d.analysis?.first_date && d.analysis?.last_date ? `${d.analysis.first_date} — ${d.analysis.last_date}` : null)}</div><p class="field-help section-gap">${esc(d.analysis?.note)}</p>`)+
+      panel("基金经理与基金公司", `<div class="metrics-list">${fundMetric("管理人",basic.company)}${fundMetric("托管人",basic.custodian)}${fundMetric("成立日期 / 规模",basic.founded)}${fundMetric("资产规模",basic.asset_size)}${fundMetric("现任基金经理",(d.managers || []).map((x) => x.name).filter(Boolean).join("、"))}${fundMetric("申购状态",d.purchase_status)}${fundMetric("赎回状态",d.redemption_status)}${fundMetric("业绩比较基准",basic.benchmark)}${fundMetric("跟踪标的",basic.tracking_target)}</div>${basic.company_url ? `<a class="text-link section-gap" href="${esc(basic.company_url)}" target="_blank" rel="noopener noreferrer">查看基金公司档案 ↗</a>` : ""}`)+
+      panel("费用", `<div class="metrics-list">${fundMetric("管理费率",basic.management_fee)}${fundMetric("托管费率",basic.custody_fee)}${fundMetric("销售服务费率",basic.sales_service_fee)}${fundMetric("最高申购费率",basic.purchase_fee)}${fundMetric("最高赎回费率",basic.redemption_fee)}</div><p class="field-help section-gap">管理费与托管费通常计入基金净值；实际交易费用以基金公告和交易平台为准。</p>`)+
+      panel("定期披露持仓", `<p class="field-help">${esc(d.holdings_report || "暂无可用持仓披露")} · 定期披露有时滞，不代表今日持仓。</p><div class="table-scroll section-gap"><table class="data-table"><thead><tr><th>证券</th><th>占净值比例</th><th>持仓市值 · 万元</th></tr></thead><tbody>${(d.holdings || []).map((x) => `<tr><td>${esc(x.name)} ${esc(x.code)}</td><td class="mono">${percent(x.weight_percent)}</td><td class="mono">${number(x.market_value_10k)}</td></tr>`).join("") || '<tr><td colspan="3">当前类型或来源未返回持仓明细</td></tr>'}</tbody></table></div><p class="field-help">前十大合计 ${weights.length ? percent(topWeight) : "—"}；仅反映已披露${d.holdings_kind === "bond" ? "债券" : "股票"}仓位。</p>`)+
+      panel("近期披露变化", `<p class="field-help">${esc(d.previous_holdings_report || "上一期持仓未取得")} → ${esc(d.holdings_report || "本期持仓未取得")}。以下只比较两期均进入前十大证券的权重变化，单位为百分点；不代表期间真实买卖。</p><div class="table-scroll section-gap"><table class="data-table"><thead><tr><th>证券</th><th>上期占比</th><th>本期占比</th><th>变化</th></tr></thead><tbody>${(d.holding_weight_changes || []).map((x) => `<tr><td>${esc(x.name)} ${esc(x.code)}</td><td>${percent(x.previous_weight_percent)}</td><td>${percent(x.weight_percent)}</td><td class="mono ${tone(x.change_pp)}">${percent(x.change_pp)}</td></tr>`).join("") || '<tr><td colspan="4">缺少可比较的两期持仓</td></tr>'}</tbody></table></div>`)+
+      panel("资产配置与研究口径", `<p class="field-help">${esc((allocation.categories || []).join("、") || "资产配置暂无可用报告期")}</p><div class="metrics-list section-gap">${(allocation.series || []).map((x) => fundMetric(x.name, (x.data || []).map((v) => v == null ? "—" : number(v) + "%").join(" / "))).join("") || fundMetric("资产配置", "暂无")}</div><p class="field-help section-gap">持仓与资产配置来自定期披露，不推断日内调仓。申购、赎回状态以当前来源返回值展示，交易前仍需向交易平台核对。</p><a class="text-link" href="${esc(d.source_url)}" target="_blank" rel="noopener noreferrer">查看天天基金原始页面 ↗</a><p class="field-help">${esc(d.source)} · 来源 ${time(d.source_time)} · 同步 ${time(d.received_at)} · ${esc(d.state)}</p>`)
+    ));
+    return;
+  }
+  const q = r.params.get("q") || "", category = r.params.get("category") || "all";
+  const page = Math.max(1, Number(r.params.get("page")) || 1);
+  const params = new URLSearchParams({q,category,page:String(page)});
+  const d = await request("/research/funds?" + params, {signal, timeout: 35000});
+  if (signal.aborted) return;
+  const href = (p) => `#/funds?q=${encodeURIComponent(q)}&category=${encodeURIComponent(category)}&page=${p}`;
+  ui.setPage(ui.page(ui.heading("公募基金", "搜索东方财富基金目录，查看净值、收益、经理、费用和定期披露。",
+    `<button class="button" data-action="refresh-funds">${icon("refresh")}同步目录</button>`) +
+    `${d.error ? `<div class="alert">${esc(d.error)}</div>` : ""}<form id="fund-search-form" class="fund-search-form section-gap" novalidate role="search"><div class="form-row"><label class="field-label" for="fund-query">基金名称或代码</label><input class="field" id="fund-query" name="query" value="${esc(q)}" maxlength="80" placeholder="例如 债券、ETF、QDII、110022"></div><div class="form-row"><label class="field-label" for="fund-category">类型</label><select class="field" id="fund-category" name="category"><option value="all">全部类型</option>${Object.entries(d.categories || {}).map(([name,count]) => `<option value="${esc(name)}" ${name === category ? "selected" : ""}>${esc(name)} · ${number(count,0)}</option>`).join("")}</select></div><button class="button primary" type="submit">搜索基金</button>${q ? '<a class="button small" href="#/funds">清空搜索</a>' : ""}</form>`+
+    panel("基金目录", `<p class="field-help">${number(d.total,0)} 只结果 · ${esc(d.source)} · 同步 ${time(d.updated_at)} · ${esc(d.state)}。${esc(d.coverage_note)}</p><div class="table-scroll section-gap"><table class="data-table"><thead><tr><th>基金</th><th>类型</th><th>交易场所</th><th>查看</th></tr></thead><tbody>${(d.rows || []).map((x) => `<tr><td><a class="text-link" href="${fundHref(x.code)}">${esc(x.name)}</a><small class="fund-code">${esc(x.code)}</small></td><td>${esc(x.fund_type || "待核实")}</td><td>${esc(x.venue)}</td><td><a class="text-link" href="${fundHref(x.code)}">分析 →</a></td></tr>`).join("") || '<tr><td colspan="4">没有符合条件的基金，请调整关键词或类型。</td></tr>'}</tbody></table></div><div class="table-footer"><span>第 ${d.page} 页 · 每页 ${d.page_size} 只</span>${d.page > 1 ? `<a class="button small" href="${href(d.page - 1)}">上一页</a>` : ""}${d.page * d.page_size < d.total ? `<a class="button small" href="${href(d.page + 1)}">下一页</a>` : ""}</div>`)
+  ));
+}
 export async function handleResearchSubmit(form, values, ui) {
+  if (form.id === "fund-search-form") {
+    location.hash = `/funds?q=${encodeURIComponent((values.query || "").trim())}&category=${encodeURIComponent(values.category || "all")}&page=1`;
+    return true;
+  }
   if (form.id !== "fund-collect-form") return false;
   const codes = [...new Set(values.codes.trim().split(/[,，\s]+/))];
   const error = document.querySelector("#fund-collect-error");
@@ -294,7 +333,7 @@ export async function handleResearchSubmit(form, values, ui) {
 }
 export async function handleResearchAction(button, ui) {
   const action = button.dataset.action;
-  if (!["refresh-index", "refresh-flow", "collect-cycle"].includes(action))
+  if (!["refresh-index", "refresh-flow", "refresh-funds", "refresh-fund", "collect-cycle"].includes(action))
     return false;
   await ui.busy(button, async () => {
     try {
@@ -310,6 +349,10 @@ export async function handleResearchAction(button, ui) {
           signal: ui.signal(),
           timeout: 24000,
         });
+      if (action === "refresh-funds")
+        await request("/research/funds?refresh=true", {signal: ui.signal(), timeout: 35000});
+      if (action === "refresh-fund")
+        await request("/research/funds/" + encodeURIComponent(button.dataset.code) + "?refresh=true", {signal: ui.signal(), timeout: 35000});
       if (action === "collect-cycle") {
         const end = new Date(),
           start = new Date(end);

@@ -13,6 +13,7 @@ from app.cycle_analysis import analyze as analyze_cycles
 from app.mysql_db import connect as mysql_connect, Row
 from app.market_context import news_context, liquidity_context, sector_rotation
 from app.research_data import INDEX_CATALOG, INDEXES, collect as collect_research
+from app import fund_research
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -83,7 +84,7 @@ class ResearchTools:
                 data['rows']=chosen or full[:16]
             data['returned_sectors']=len(data['rows'])
             data['coverage_note']='摘要每阶段最多4个；未返回行业不可推断，可传name查询指定行业。'
-            item=self._evidence('sector_rotation','行业轮动与相对强弱','东方财富 · AKShare + 本机采集快照',None,data)
+            item=self._evidence('sector_rotation','行业轮动与相对强弱',' / '.join(sorted({s.get('source','未知') for s in data.get('sources',[])}))+' + 本机采集快照',None,data)
             return {'evidence':[item],**data}
         if name == 'get_historical_cycles':
             data = analyze_cycles(_db,str(args['instrument_id']),args.get('years',5))
@@ -100,10 +101,27 @@ class ResearchTools:
             item = self._evidence('index_analysis',f"{INDEXES[index_id]['name']} 指数分析",data.get('source','本机缓存'),analysis['last_bar'],detail)
             return {'evidence':[item],**detail}
         if name == 'get_market_flow_history':
-            if os.getenv('AKSHARE_ENABLED','true').lower()!='true': return {'data_gap':'公共数据采集已关闭'}
-            data = await collect_research(_db,'market_flow','CN')
-            detail = {**data,'rows':data.get('rows',[])[:30]}
-            item = self._evidence('market_flow','沪深大盘资金历史',data['source'],None,detail)
+            data = (await collect_research(_db,'market_flow','CN') if os.getenv('AKSHARE_ENABLED','true').lower()=='true'
+                    else {'rows':[],'state':'disabled','source':'大盘资金采集已关闭'})
+            extra = await fund_research.flows(_db)
+            detail = {**data,'rows':data.get('rows',[])[:30],
+                      'northbound':{**extra['northbound'],'rows':extra['northbound'].get('rows',[])[:10]},
+                      'sectors':{**extra['sectors'],'rows':extra['sectors'].get('rows',[])[:20]}}
+            item = self._evidence('market_flow','大盘、行业与北向资金历史','AKShare · 东方财富 / 东方财富直接接口',None,detail)
+            return {'evidence':[item],**detail}
+        if name == 'search_fund_directory':
+            query = str(args.get('query','')).strip()[:80]
+            category = str(args.get('category','all'))[:24]
+            data = await fund_research.search(_db,query,category,1,20)
+            item = self._evidence('fund_directory','东方财富公募基金目录',data['source'],data['updated_at'],data)
+            return {'evidence':[item],**data}
+        if name == 'get_fund_research':
+            code = str(args.get('fund_code','')).strip()
+            if not re.fullmatch(r'\d{6}',code): raise ValueError('请使用六位基金代码')
+            data = await fund_research.detail(_db,code)
+            detail = {**data,'nav_history':data.get('nav_history',[])[-30:]}
+            item = self._evidence('fund_research',f"基金 {code} 研究资料",data['source'],
+                                  (data.get('latest_nav') or {}).get('date'),detail)
             return {'evidence':[item],**detail}
         if name == 'collect_fund_disclosures':
             codes = list(dict.fromkeys(args.get('codes') or []))
@@ -366,9 +384,10 @@ class ResearchTools:
             detail = {'available_local_flow_series':['沪深成交分类大盘资金'] if data.get('rows') else [],
                       'market_flow_state':data.get('state','waiting'),'market_flow_received_at':data.get('received_at'),
                       'stock_sector_flow':'AKShare按成交分类估计，个股/行业工具按需查询',
-                      'fund_disclosures':'指定基金定期持仓和年度重大买卖披露，不是完整实时流水',
+                      'fund_disclosures':'东方财富基金目录、净值、费率和定期持仓按需同步；年度重大买卖披露不等于完整实时流水',
                       'northbound_realtime_buy_sell_turnover':'not_published_by_HKEX_since_2024-08-19',
                       'northbound_connected':False,
+                      'northbound_history_cached':bool(fund_research._read(_db,'flows:northbound')),
                       'note':'北向/南向官方实时买卖额未接入；历史接口的缺失字段不能当零，也不能用主力资金代替北向。',
                       'source_url':'https://www.hkex.com.hk/News/Market-Communications/2024/2404122news?sc_lang=en'}
             item = self._evidence('data_coverage','资金数据覆盖','HKEX + 本机采集状态',None,detail)

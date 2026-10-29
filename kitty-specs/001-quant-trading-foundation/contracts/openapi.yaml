@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: Financial Freedom Quant API
+  title: finfreedom Quant API
   version: 0.1.0
   description: Local first-phase market data and paper trading API. No live brokerage order routes.
 servers:

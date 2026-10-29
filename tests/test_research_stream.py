@@ -14,6 +14,10 @@ from app.deerflow_worker import collect_stream_answer
 
 
 class ResearchStreamTests(unittest.TestCase):
+    def test_chat_and_legacy_research_share_one_agent_handler(self):
+        routes = {route.path: route.endpoint for route in main.app.routes if hasattr(route, "endpoint")}
+        self.assertIs(routes["/api/v1/ai/chat/stream"], routes["/api/v1/ai/research/stream"])
+
     def test_worker_stream_selects_last_public_message(self):
         events = [
             SimpleNamespace(type="messages-tuple", data={"type": "ai", "id": "draft", "content": "查询前的文字"}),

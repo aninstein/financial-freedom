@@ -61,4 +61,4 @@ python3 scripts/futu-host.py --ensure
 docker compose config --quiet
 docker compose build web
 docker compose up -d --no-build --wait --remove-orphans web deerflow
-printf 'Financial Freedom: http://127.0.0.1:%s\n' "${APP_PORT:-8000}"
+printf 'finfreedom: http://127.0.0.1:%s\n' "${APP_PORT:-8000}"

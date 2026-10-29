@@ -81,6 +81,8 @@ components:
 
 The product is a personal investing workspace with an AI research agent. Treat financial information as an instrument panel: legible, sourced, time-aware, and calm. The signature is an evidence rail that links every recommendation to its quote, market data, and strategy run. The experience is a product surface, not a trading terminal clone.
 
+Use `prototype/finfreedom-mark.svg` as the canonical brand mark in the workspace sidebar, sign-in surface, chat welcome, and browser favicon. Keep it distinct from functional spark icons used for AI actions and status.
+
 The market views follow the user's color-adjusted Lobster and OG references: navy and coral for A-share, slate and bright green for US, thin separators, compact conversation elements, and low visual noise. Keep the content specific to portfolios, market sessions, strategies, and evidence. Avoid generic purple AI gradients, glossy glass panels, and flashing trading effects.
 
 The index page uses a compact quote board within this language: one featured index, ten small linked cards, tabular numerals, and fixed geometry. When a live value changes, its block briefly receives a low-opacity tint based on the index's overall gain or loss and the selected A-share/US palette; the tint is disabled for reduced motion. Source and exchange timestamps remain in quiet text beside the numbers; live display cadence never overrides data freshness labels.
@@ -95,9 +97,9 @@ Use the system sans stack for Chinese and English interface text. Use the monosp
 
 ## Layout
 
-The primary surface is an Agent conversation, following the reference VOS/Duet workspace: left navigation and recent research, a quiet conversation canvas, and a hideable right rail for personal watchlist and market clocks. The rail appears only in the Agent conversation. Chat has a bottom composer and its own message scroller. The welcome state offers a screenshot-to-holdings entry point and three concrete research starting points. Data is reached through separate routes, conversation links, and evidence-backed result cards.
+The primary surface is an Agent conversation, following the reference VOS/Duet workspace: left navigation and recent research, a quiet conversation canvas, and a hideable right rail for personal watchlist and market clocks. The rail appears only in the Agent conversation. Chat has a bottom composer and its own message scroller. The welcome state offers a text-or-screenshot-to-holdings entry point and three concrete research starting points. Data is reached through separate routes, conversation links, and evidence-backed result cards.
 
-Desktop navigation is 224px. At widths ≤900px the chat context rail opens in an application modal; at ≤760px navigation uses a modal menu. Data pages use the freed content width and natural height within the canonical page scroller; wide tables own horizontal overflow. Keep every action available on narrow screens. Use URL state for market filters, search, paging and detail tabs.
+Desktop navigation is 224px. The sidebar brand shows “Finfreedom” with “AI 投研” on its own line so neither label wraps or compresses. At widths ≤900px the chat context rail opens in an application modal; at ≤760px navigation uses a modal menu. Data pages use the freed content width and natural height within the canonical page scroller; wide tables own horizontal overflow. Keep every action available on narrow screens. Use URL state for market filters, search, paging and detail tabs.
 
 Use a 4px base rhythm with 16px panel corners and 10px controls. Prefer fine separators to nested cards. Preserve generous conversation width and readable paragraph length. Financial tables can be denser than chat. Do not turn the homepage into a collection of dashboard widgets.
 

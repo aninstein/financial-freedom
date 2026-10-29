@@ -5,6 +5,23 @@ let currentDocument = null;
 let directoryCollapsed = false;
 let directoryBeforeEdit = false;
 
+async function readWiki(path, signal) {
+  const delays = [1000, 2000, 6000];
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await request(path, { signal });
+    } catch (error) {
+      if (!(error instanceof TypeError) || signal?.aborted || attempt === delays.length) {
+        if (error instanceof TypeError && !signal?.aborted)
+          throw new Error('暂时无法连接服务，请点击“刷新”重试。');
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+      if (signal?.aborted) throw signal.reason || new DOMException('请求已取消', 'AbortError');
+    }
+  }
+}
+
 function setDirectoryCollapsed(collapsed) {
   directoryCollapsed = collapsed;
   const layout = document.querySelector('.wiki-layout');
@@ -82,9 +99,9 @@ export async function renderWikiPage(route, signal, { setPage, page, heading }) 
   const directory = route.params.get('dir') || '';
   const selected = route.params.get('file') || (directory ? `${directory}/index.md` : 'index.md');
   const [listingResult, settingsResult, documentResult] = await Promise.all([
-    request(`/ai/memory/wiki/tree?path=${encodeURIComponent(directory)}`, { signal }).catch((error) => ({ error: error.message })),
-    request('/ai/memory/settings', { signal }).catch((error) => ({ error: error.message })),
-    request(`/ai/memory/wiki/file?path=${encodeURIComponent(selected)}`, { signal }).catch((error) => ({ error: error.message })),
+    readWiki(`/ai/memory/wiki/tree?path=${encodeURIComponent(directory)}`, signal).catch((error) => ({ error: error.message })),
+    readWiki('/ai/memory/settings', signal).catch((error) => ({ error: error.message })),
+    readWiki(`/ai/memory/wiki/file?path=${encodeURIComponent(selected)}`, signal).catch((error) => ({ error: error.message })),
   ]);
   if (signal?.aborted) return;
   const listing = listingResult.items || [];

@@ -9,6 +9,7 @@ import {
 import {
   renderIndices,
   renderFlows,
+  renderFunds,
   cycleMarkup,
   cleanupIndices,
   mountMarketIndices,
@@ -47,11 +48,13 @@ import {
 import { API, request, requestEvents, postOrder } from "./api.js";
 import { extensionsMarkup, mountExtensions } from "./agent-extensions.js";
 import { renderWikiPage, handleWikiAction } from "./investment-wiki.js";
-import { renderHoldings, handleHoldingsAction, handleHoldingsSubmit, handleHoldingsScreenshot, previewChatHoldingsScreenshot, clearHoldingsDraft, isHoldingsImportIntent } from "./holdings.js";
+import { renderGlossaryPage, loadGlossary, chatTermsMarkup, handleGlossaryAction } from "./ai-glossary.js";
+import { renderHoldings, handleHoldingsAction, handleHoldingsSubmit, handleHoldingsScreenshot, clearHoldingsDraft } from "./holdings.js";
 import { installInstrumentSearch, resolveInstrument } from "./instrument-search.js";
 import {
   esc,
   icon,
+  brandMark,
   markets,
   phases,
   number,
@@ -88,11 +91,13 @@ const features = [
   ["indices", "candles", "大盘与指数", "#indices", "主要指数与市场表现"],
   ["news", "file", "新闻与流动性", "#news", "财经快讯与政策事件"],
   ["liquidity", "bank", "央行流动性", "#liquidity", "逆回购公告与流动性事件"],
-  ["flows", "wallet", "资金与基金", "#flows", "资金统计、基金与披露"],
+  ["flows", "wallet", "资金流向", "#flows", "大盘、行业与北向资金"],
+  ["funds", "layers", "公募基金", "#funds", "搜索与研究各类基金"],
   ["sectors", "layers", "板块轮动与资金", "#sectors", "行业强弱、轮动与成分股"],
   ["research", "flask", "策略研究", "#research", "策略实验、回测与研究记录"],
   ["paper", "flask", "模拟炒股", "#paper", "本地与富途模拟账户、委托和持仓"],
   ["documents", "file", "研报资料", "#documents", "导入资料并交给 Agent 分析"],
+  ["glossary", "layers", "AI 词条", "#glossary", "收藏词条与新闻推荐研究主题"],
   ["holdings", "wallet", "我的持仓", "#holdings", "股票、基金与黄金持仓"],
   ["security", "shield", "账户安全", "#security", "身份验证与账户安全设置"],
   ["settings", "settings", "数据与模型", "#settings", "Agent 配置、行情源和偏好"],
@@ -156,6 +161,8 @@ const state = {
   legacyChatSessions: [],
   memoryEntries: [],
   memoryStatus: "ready",
+  glossary: null,
+  glossaryExpanded: false,
   sessionQuery: "",
   activeChatId: null,
   railCards: railPrefs.cards,
@@ -191,7 +198,8 @@ const titles = {
   indices: "大盘与指数",
   news: "新闻与流动性",
   liquidity: "央行流动性",
-  flows: "资金与基金",
+  flows: "资金流向",
+  funds: "公募基金",
   sectors: "板块轮动与资金",
   stocks: "个股详情",
   research: "策略研究",
@@ -201,6 +209,7 @@ const titles = {
   live: "实盘交易",
   settings: "数据与模型",
   memory: "投资记忆",
+  glossary: "AI 词条",
   calendar: "交易日历",
 };
 const canonical = (id) => {
@@ -240,8 +249,8 @@ function navItem(id, glyph, label, href = `#/${id}`) {
 }
 function navMarkup() {
   const more = [
-    ["市场研究", ["indices", "news", "liquidity", "flows", "sectors", "gold"]],
-    ["研究工具", ["paper", "research", "documents"]],
+    ["市场研究", ["indices", "news", "liquidity", "flows", "funds", "sectors", "gold"]],
+    ["研究工具", ["paper", "research", "documents", "glossary"]],
   ];
   return `<div class="nav-primary">${navItem("holdings", "wallet", "我的持仓")}${navItem("live", "wallet", "实盘交易")}${navItem("watchlist", "star", "我的自选")}${navItem("markets", "globe", "市场总览")}</div><details class="nav-more"><summary><span>${icon("grid")}更多工具</span><span class="nav-more-caret">⌄</span></summary>${more.map(([title, ids]) => `<section class="nav-subgroup"><div class="nav-label">${title}</div>${ids.map((id) => {
     const feature = features.find((x) => x[0] === id);
@@ -295,7 +304,7 @@ function renderSidebar() {
   const desktopMoreOpen = $("#sidebar .nav-more")?.open || secondaryRoute;
   const mobileMoreOpen = $("#mobile-nav .nav-more")?.open || secondaryRoute;
   $("#sidebar").innerHTML =
-    `<div class="brand-row"><a class="brand" href="#/chat"><div class="brand-mark">${icon("spark")}</div>Finch<span>AI 投研</span></a></div><button class="button ghost new-chat" data-action="new-chat" ${state.sending ? "disabled" : ""}>${icon("plus")} 新建会话</button><nav class="nav-group" aria-label="工作台主导航">${navMarkup()}</nav><div class="session-heading"><span>${icon("chat")}投研对话</span><small>${state.chatSessions.length} 个</small></div><label class="session-search" aria-label="搜索投研对话">${icon("search")}<input id="session-query" type="search" value="${esc(state.sessionQuery)}" placeholder="搜索投研对话" autocomplete="off" /></label><div class="recent-list session-list" id="session-results" aria-label="投研对话">${sessionListMarkup()}</div><div class="sidebar-bottom"><button class="runtime-row account-trigger" data-action="account-menu" aria-haspopup="dialog"><span class="avatar-local">${esc(username.slice(0, 1).toUpperCase())}</span><span class="account-summary"><strong>${esc(username)}</strong><small>${identitySecurityLabel()}</small></span>${icon("settings")}</button><div class="agent-state"><span class="status-dot ${configured ? "ready" : "warn"}"></span>${configured ? "Agent 已配置" : "Agent 待配置"}</div></div>`;
+    `<div class="brand-row"><a class="brand sidebar-brand" href="#/chat"><div class="brand-mark">${brandMark()}</div><div class="brand-copy"><strong>Finfreedom</strong><small>AI 投研</small></div></a></div><button class="button ghost new-chat" data-action="new-chat" ${state.sending ? "disabled" : ""}>${icon("plus")} 新建会话</button><nav class="nav-group" aria-label="工作台主导航">${navMarkup()}</nav><div class="session-heading"><span>${icon("chat")}投研对话</span><small>${state.chatSessions.length} 个</small></div><label class="session-search" aria-label="搜索投研对话">${icon("search")}<input id="session-query" type="search" value="${esc(state.sessionQuery)}" placeholder="搜索投研对话" autocomplete="off" /></label><div class="recent-list session-list" id="session-results" aria-label="投研对话">${sessionListMarkup()}</div><div class="sidebar-bottom"><button class="runtime-row account-trigger" data-action="account-menu" aria-haspopup="dialog"><span class="avatar-local">${esc(username.slice(0, 1).toUpperCase())}</span><span class="account-summary"><strong>${esc(username)}</strong><small>${identitySecurityLabel()}</small></span>${icon("settings")}</button><div class="agent-state"><span class="status-dot ${configured ? "ready" : "warn"}"></span>${configured ? "Agent 已配置" : "Agent 待配置"}</div></div>`;
   $("#mobile-nav").innerHTML = navMarkup();
   if (desktopMoreOpen) $("#sidebar .nav-more").open = true;
   if (mobileMoreOpen) $("#mobile-nav .nav-more").open = true;
@@ -309,7 +318,7 @@ function sessionStoreKey() {
   return `${CHAT_SESSIONS_KEY}:${user.user_id || user.id || user.username || "local"}`;
 }
 function privateExtensionText(value) {
-  return /mcpServers|npm_config_registry/i.test(String(value || ''));
+  return /["']mcpServers["']\s*:|npm_config_registry\s*=/i.test(String(value || ''));
 }
 function loadChatSessions() {
   try {
@@ -542,8 +551,8 @@ function modelNote() {
   if (state.memoryStatus === "degraded")
     return `<span><span class="status-dot warn"></span>投资记忆暂时不可用；本轮只依据当前数据分析</span>`;
   if (state.status?.enabled)
-    return `<span><span class="status-dot ready"></span> ${esc(state.status.primary_model)}</span><span>只读数据工具已就绪</span>`;
-  return `<span>配置模型后，Finch 可以调取数据并整理研究结论。</span><a class="text-link" href="#/settings">配置模型 ↗</a>`;
+    return `<span><span class="status-dot ready"></span> ${esc(state.status.primary_model)}</span><span>平台 MCP 工具已就绪</span>`;
+  return `<span>配置模型后，Finfreedom 可以调取数据并整理研究结论。</span><a class="text-link" href="#/settings">配置模型 ↗</a>`;
 }
 function pastedImageMarkup() {
   if (!state.pastedImage) return "";
@@ -654,7 +663,7 @@ function restoreForm() {
   }
 }
 function welcome() {
-  return `<div class="chat-welcome"><div class="welcome-symbol">${icon("spark")}</div><h1>今天，想研究什么？<span>从一个问题，到一份有据可查的判断。</span></h1><p>和 Finch 一起看个股、拆解板块，或读一份财报。需要深入时，直接从回答进入对应的数据页面。</p><div class="prompt-grid"><button class="prompt-card" data-action="prompt" data-question="请把我粘贴的截图中的持仓导入我的持仓，先生成识别草稿供我核对。">${icon("file")}<strong>截图导入持仓</strong><small>粘贴截图，识别后发送；保存前可核对</small></button><button class="prompt-card" data-action="prompt" data-question="请结合最新新闻、央行流动性和大盘指数，分析行业今日/5日/10日轮动，找出相对改善和转弱板块，说明数据缺口。">${icon("chart")}<strong>研究板块轮动</strong><small>新闻、流动性与行业相对强弱</small></button><button class="prompt-card" data-action="prompt" data-question="读取最新财经快讯和央行逆回购公告，分析潜在行业影响，区分已确认事实、推断与到期/净投放缺口。">${icon("grid")}<strong>追踪新闻与政策</strong><small>公开市场操作、事件与行业影响</small></button><button class="prompt-card" data-action="prompt" data-question="请分析 CN:600519 的价格、财务和风险，再说明所属行业与大盘环境，引用来源。">${icon("layers")}<strong>深入候选个股</strong><small>行业环境、财务与风险</small></button></div><div class="chat-intro-line">${icon("link")}每条数据卡片都能继续打开，查看详细指标与来源。</div></div>`;
+  return `<div class="chat-welcome"><div class="welcome-symbol">${brandMark()}</div><h1>今天，想研究什么？<span>从一个问题，到一份有据可查的判断。</span></h1><p>和 Finfreedom 一起看个股、拆解板块，或读一份财报。需要深入时，直接从回答进入对应的数据页面。</p>${chatTermsMarkup(state)}<div class="prompt-grid"><button class="prompt-card" data-action="prompt" data-question="请把我提供的持仓信息导入我的持仓，先生成草稿供我核对。">${icon("file")}<strong>导入持仓</strong><small>粘贴文字或截图；保存前可核对</small></button><button class="prompt-card" data-action="prompt" data-question="请结合最新新闻、央行流动性和大盘指数，分析行业今日/5日/10日轮动，找出相对改善和转弱板块，说明数据缺口。">${icon("chart")}<strong>研究板块轮动</strong><small>新闻、流动性与行业相对强弱</small></button></div><div class="chat-intro-line">${icon("link")}每条数据卡片都能继续打开，查看详细指标与来源。</div></div>`;
 }
 function userImageMarkup(message) {
   const source = message.imageId
@@ -686,7 +695,7 @@ function messageMarkup(m, i) {
   const error = `<div class="alert error" role="alert">${esc(m.error)}<br>${m.question ? `<button class="button small ghost" data-action="retry-chat" data-index="${i}">重新发送</button>` : ''} <a class="text-link" href="#/settings">查看模型与数据状态</a></div>`;
   const body = m.pending ? researchProgressMarkup(m) : m.error ? error : isUser ? `${userImageMarkup(m)}${esc(m.content)}` : `${researchToolsMarkup(m)}${cards}${markdown(m.content)}`;
   const footer = !isUser && !m.pending && !m.error ? `<footer class="message-actions"><button data-action="copy-message" data-index="${i}">${icon("copy")}复制</button><button data-action="all-evidence" data-index="${i}">${icon("link")}${m.evidence?.length || 0} 条数据证据</button>${m.calendarDraft ? `<button class="calendar-ai-save" data-action="calendar-add-ai" data-index="${i}" data-date="${esc(m.calendarDraft.date)}" data-category="${esc(m.calendarDraft.category)}">加入 ${esc(m.calendarDraft.date)} 日历</button>` : ""}<span>${m.tool_calls || 0} 次工具调用</span></footer>` : '';
-  return `<article class="message ${isUser ? "user" : "assistant"}" data-message="${i}"><header class="message-meta"><span class="message-avatar ${isUser ? "" : "agent"}">${isUser ? "我" : icon("spark")}</span><strong>${isUser ? "你" : "Finch"}</strong>${m.model ? `<span class="muted">${esc(m.model)}</span>` : ""}<time>${time(m.created_at)}</time></header><div class="message-content">${body}</div>${footer}</article>`;
+  return `<article class="message ${isUser ? "user" : "assistant"}" data-message="${i}"><header class="message-meta"><span class="message-avatar ${isUser ? "" : "agent"}">${isUser ? "我" : icon("spark")}</span><strong>${isUser ? "你" : "Finfreedom"}</strong>${m.model ? `<span class="muted">${esc(m.model)}</span>` : ""}<time>${time(m.created_at)}</time></header><div class="message-content">${body}</div>${footer}</article>`;
 }
 function updateStreamingBubble(message) {
   const scroll = $('#messages');
@@ -713,9 +722,16 @@ function updateMessages(follow = true) {
 }
 function renderChat() {
   setPage(
-    `<div class="chat-layout"><section class="conversation" aria-label="AI 投研对话"><header class="chat-heading"><span><span class="agent-spark">${icon("spark")}</span><strong id="page-title">AI 投研</strong> <span class="muted">/ <span id="active-session-title">${esc(state.chatSessions.find((item) => item.id === state.activeChatId)?.title || "当前会话")}</span></span></span><a class="button small ghost chat-memory-link" href="#/memory">${icon("file")} 投资记忆</a><button class="button small" data-action="daily-advice">持仓操作建议</button><button class="icon-button" data-action="new-chat" aria-label="新建 AI 投研会话" ${state.sending ? "disabled" : ""}>${icon("plus")}</button></header><div class="messages" id="messages" aria-label="对话记录"><div class="messages-inner" id="messages-inner"></div></div><div class="composer-wrap"><div class="model-note" id="model-note">${modelNote()}</div><form id="chat-form" class="composer" novalidate><label class="sr-only" for="chat-input">向 Finch 提问</label><div id="chat-image-preview" class="chat-image-preview" aria-live="polite">${pastedImageMarkup()}</div><textarea id="chat-input" class="resize-none" name="question" rows="2" placeholder="问一只股票、一个板块，或交给 Finch 一份材料…" maxlength="4000">${esc(state.draft)}</textarea><div class="composer-footer"><a class="icon-button" href="#/documents" aria-label="上传研报或财报">${icon("paperclip")}</a><button class="icon-button" type="button" data-action="skill-zip-chat" aria-label="安装 Skill ZIP" title="安装 Skill ZIP">${icon("plus")}</button><input class="sr-only" id="chat-skill-zip" type="file" accept=".zip,application/zip" aria-label="选择 Skill ZIP" /><button class="icon-button ${state.accountId ? "positive" : ""}" type="button" data-action="account-context" aria-label="选择本次对话的账户上下文">${icon("wallet")}</button><span class="hint" id="chat-vision-hint">${state.accountId ? "本次允许读取指定账户" : state.status?.supports_vision ? "粘贴图片 · Enter 发送" : "Enter 发送 · Shift + Enter 换行"}</span><button class="send-button" id="send-button" aria-label="发送研究问题" ${state.sending ? "disabled" : ""}>${state.sending ? '<span class="spinner"></span>' : icon("up")}</button></div></form></div></section></div>`,
+    `<div class="chat-layout"><section class="conversation" aria-label="AI 投研对话"><header class="chat-heading"><span><span class="agent-spark">${icon("spark")}</span><strong id="page-title">AI 投研</strong> <span class="muted">/ <span id="active-session-title">${esc(state.chatSessions.find((item) => item.id === state.activeChatId)?.title || "当前会话")}</span></span></span><a class="button small ghost chat-memory-link" href="#/memory">${icon("file")} 投资记忆</a><button class="button small" data-action="daily-advice">持仓操作建议</button><button class="icon-button" data-action="new-chat" aria-label="新建 AI 投研会话" ${state.sending ? "disabled" : ""}>${icon("plus")}</button></header><div class="messages" id="messages" aria-label="对话记录"><div class="messages-inner" id="messages-inner"></div></div><div class="composer-wrap"><div class="model-note" id="model-note">${modelNote()}</div><form id="chat-form" class="composer" novalidate><label class="sr-only" for="chat-input">向 Finfreedom 提问</label><div id="chat-image-preview" class="chat-image-preview" aria-live="polite">${pastedImageMarkup()}</div><textarea id="chat-input" class="resize-none" name="question" rows="2" placeholder="问一只股票、一个板块，或交给 Finfreedom 一份材料…" maxlength="4000">${esc(state.draft)}</textarea><div class="composer-footer"><a class="icon-button" href="#/documents" aria-label="上传研报或财报">${icon("paperclip")}</a><a class="icon-button" href="#/settings?section=skills" aria-label="管理 Skills" title="管理 Skills">${icon("plus")}</a><button class="icon-button ${state.accountId ? "positive" : ""}" type="button" data-action="account-context" aria-label="选择本次对话的账户上下文">${icon("wallet")}</button><span class="hint" id="chat-vision-hint">${state.accountId ? "本次允许读取指定账户" : state.status?.supports_vision ? "粘贴图片 · Enter 发送" : "Enter 发送 · Shift + Enter 换行"}</span><button class="send-button" id="send-button" aria-label="发送研究问题" ${state.sending ? "disabled" : ""}>${state.sending ? '<span class="spinner"></span>' : icon("up")}</button></div></form></div></section></div>`,
   );
   updateMessages(false);
+  loadGlossary().then((glossary) => {
+    state.glossary = glossary;
+    if (state.route?.name === 'chat' && !state.messages.length) updateMessages(false);
+  }).catch(() => {
+    state.glossary = { terms: [], recommendations: [] };
+    if (state.route?.name === 'chat' && !state.messages.length) updateMessages(false);
+  });
   $("#chat-input").addEventListener("input", (e) => {
     state.draft = e.target.value;
     e.target.style.height = "auto";
@@ -740,9 +756,8 @@ async function sendChat(question = state.draft, reuseImageId = null) {
     rejectPastedImage();
     return;
   }
-  const management = /mcpServers|npm_config_registry/i.test(question) || (/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/.test(question) && /安装|添加|install/i.test(question));
-  const importHoldings = isHoldingsImportIntent(question);
-  const displayQuestion = management ? (/mcpServers/.test(question) ? '添加 MCP 连接' : '安装 Skill') : question;
+  const privateMaterial = privateExtensionText(question);
+  const displayQuestion = privateMaterial ? '私密配置已提交给 Agent（内容已隐藏）' : question;
   const history = state.messages
     .filter((m) => !m.error && !m.pending && !m.management)
     .slice(-10)
@@ -754,20 +769,20 @@ async function sendChat(question = state.draft, reuseImageId = null) {
     imageId: reuseImageId,
     imagePreview: pastedImage?.dataUrl || null,
     message_id: crypto.randomUUID(),
-    management,
+    management: privateMaterial,
     created_at: new Date().toISOString(),
   };
   state.messages.push(userMessage);
   const pending = {
     role: "assistant",
     pending: true,
-    progressStatus: '正在准备研究…',
+    progressStatus: '正在处理请求…',
     progressTools: [],
     streamText: '',
     created_at: new Date().toISOString(),
-    question: management ? null : question,
-    management,
-    calendarDraft: management ? null : state.calendarDraft,
+    question: privateMaterial ? null : question,
+    management: privateMaterial,
+    calendarDraft: privateMaterial ? null : state.calendarDraft,
   };
   state.calendarDraft = null;
   state.messages.push(pending);
@@ -799,23 +814,7 @@ async function sendChat(question = state.draft, reuseImageId = null) {
       userMessage.imageSize = uploaded.byte_size || pastedImage?.size;
       userMessage.imageHash = uploaded.sha256;
     }
-    if (importHoldings) {
-      const currency = /港股|港币|HKD/i.test(question) ? 'HKD' : /美股|美元|USD/i.test(question) ? 'USD' : 'CNY';
-      const prior = !pastedImage && state.activeChatId && !/^(?:history-|legacy-)/.test(state.activeChatId)
-        ? await request('/ai/images/latest?session_id=' + encodeURIComponent(state.activeChatId)) : null;
-      const imageId = uploaded?.image_id || prior?.image_id;
-      if (!imageId && !pastedImage) throw new Error('当前会话没有可导入的图片，请先粘贴持仓截图。');
-      const draft = await previewChatHoldingsScreenshot(imageId ? { image_id: imageId } : { image_data_url: pastedImage.dataUrl }, currency);
-      userMessage.imageId = imageId || null;
-      Object.assign(pending, {
-        pending: false,
-        management: true,
-        content: `已从截图识别出 ${draft.count} 条 ${draft.currency} 持仓${draft.warnings ? `，另有 ${draft.warnings} 处需要手动检查` : ''}。请在[我的持仓核对识别草稿](#/holdings?currency=${draft.currency}&import=1)，确认数量、成本和收益率后填入表单并保存。截图本身不会自动写入账本。`,
-        tool_calls: 0,
-      });
-      return;
-    }
-    if (!management && (!state.activeChatId || /^(?:history-|legacy-)/.test(state.activeChatId))) {
+    if (!state.activeChatId || /^(?:history-|legacy-)/.test(state.activeChatId)) {
       const created = await request("/ai/sessions", { method: "POST", body: { title: displayQuestion.slice(0, 120) } });
       state.activeChatId = created.id;
       state.serverChatSessions = [created, ...state.serverChatSessions];
@@ -826,12 +825,9 @@ async function sendChat(question = state.draft, reuseImageId = null) {
       question,
       history,
       max_tool_calls: 16,
-      include_account: !!state.accountId,
     };
-    if (!management) {
-      body.session_id = state.activeChatId;
-      body.client_message_id = userMessage.message_id;
-    }
+    body.session_id = state.activeChatId;
+    body.client_message_id = userMessage.message_id;
     if (state.accountId) body.account_id = state.accountId;
     if (uploaded) body.image_id = uploaded.image_id;
     else if (pastedImage) body.image_data_url = pastedImage.dataUrl;
@@ -843,8 +839,8 @@ async function sendChat(question = state.draft, reuseImageId = null) {
         updateStreamingBubble(pending);
       }, 70);
     };
-    await requestEvents('/ai/research/stream', { body, timeout: 190000, onEvent: (event) => {
-      if (event.type === 'error') throw new Error(event.message || '研究运行失败');
+    await requestEvents('/ai/chat/stream', { body, timeout: 190000, onEvent: (event) => {
+      if (event.type === 'error') throw new Error(event.message || 'Agent 运行失败');
       if (event.type === 'done') { result = event.result; return; }
       if (event.type === 'run') pending.run_id = event.run_id;
       if (event.type === 'status') pending.progressStatus = event.message;
@@ -863,7 +859,7 @@ async function sendChat(question = state.draft, reuseImageId = null) {
       }
       paint();
     } });
-    if (!result) throw new Error('连接提前结束，研究结果尚未返回。');
+    if (!result) throw new Error('连接提前结束，Agent 结果尚未返回。');
     if (paintTimer !== null) { clearTimeout(paintTimer); paintTimer = null; }
     if (result.display_question) userMessage.content = result.display_question;
     if (result.session_id) state.activeChatId = result.session_id;
@@ -881,44 +877,19 @@ async function sendChat(question = state.draft, reuseImageId = null) {
     delete pending.progressStatus;
     refreshShell();
   } catch (error) {
-    Object.assign(pending, { pending: false, error: error.message, question: management ? null : question });
+    Object.assign(pending, { pending: false, error: error.message, question: privateMaterial ? null : question });
     delete pending.streamText;
     delete pending.progressStatus;
   } finally {
     if (paintTimer !== null) clearTimeout(paintTimer);
     state.sending = false;
-    if (!management) persistChatSession();
+    persistChatSession();
     updateMessages(false);
     const send = $("#send-button");
     if (send) {
       send.disabled = false;
       send.innerHTML = icon("up");
     }
-  }
-}
-async function installChatSkillZip(file) {
-  if (!file || state.sending) return;
-  if (!file.name.toLowerCase().endsWith('.zip') || file.size > 10 * 1024 * 1024) {
-    notify('请选择不超过 10 MB 的 Skill ZIP');
-    return;
-  }
-  if (!state.activeChatId) state.activeChatId = crypto.randomUUID();
-  state.messages.push({ role: 'user', content: `安装 Skill ZIP：${file.name}`, management: true, created_at: new Date().toISOString() });
-  const pending = { role: 'assistant', pending: true, management: true, created_at: new Date().toISOString() };
-  state.messages.push(pending);
-  state.sending = true;
-  updateMessages();
-  try {
-    const data = new FormData();
-    data.append('file', file);
-    const result = await request('/agent/extensions/skills/upload', { method: 'POST', body: data, timeout: 45000 });
-    Object.assign(pending, { pending: false, content: `已安装 **${result.name}**。\n\n元数据描述：${result.description}${result.requested_tools?.length ? `\n\n声明所需工具：${result.requested_tools.join('、')}。安装不会自动授予这些权限。` : ''}\n\n后续可以让我按此 Skill 的说明检查配置。`, tool_calls: 0 });
-  } catch (error) {
-    Object.assign(pending, { pending: false, error: error.message });
-  } finally {
-    state.sending = false;
-    persistChatSession();
-    updateMessages(false);
   }
 }
 function ask(question) {
@@ -1080,7 +1051,7 @@ async function renderStock(r, signal) {
         ? `<div class="panel-body">${rows.map((x) => `<button class="recent-button" data-action="open-run" data-id="${esc(x.run_id)}">${esc(x.question)} · ${time(x.created_at)}</button>`).join("")}</div>`
         : empty(
             "还没有这只股票的研究",
-            "向 Finch 提问，相关研究会保留在这里。",
+            "向 Finfreedom 提问，相关研究会保留在这里。",
             `<button class="button" data-action="ask" data-question="请分析 ${esc(id)} 的趋势和主要风险。">开始研究</button>`,
             "chat",
           ),
@@ -1188,7 +1159,7 @@ async function renderDocuments(r, signal) {
     page(
       heading(
         "研报资料",
-        "把材料带进对话。导入后，Finch 可以检索原文并引用页码。",
+        "把材料带进对话。导入后，Finfreedom 可以检索原文并引用页码。",
       ) +
         `<div class="split">${panel("我的资料", docs.length ? docRows(docs) : empty("还没有导入资料", "上传研报、财报或公告，为研究补充原始材料。", "", "file"))}${panel("导入资料", `<form class="panel-body" id="document-form" novalidate data-draft><div class="form-row"><label class="field-label" for="document-file">选择文件</label><input class="field" id="document-file" type="file" name="file" accept=".pdf,.txt,.md,.csv" /><p class="field-help">PDF / TXT / Markdown / CSV · 最大 12 MiB。扫描件暂不支持 OCR。</p></div><div class="form-row"><label class="field-label" for="document-type">资料类型</label><select class="field" id="document-type" name="document_type"><option value="research_report">研报</option><option value="financial_report">财报</option><option value="announcement">公告</option><option value="other">其他</option></select></div><div class="form-row"><label class="field-label" for="document-instrument">关联标的（可选）</label><span class="instrument-search"><input class="field" id="document-instrument" name="instrument_id" value="${esc(r.params.get("instrument") || "")}" placeholder="股票名称或代码" autocomplete="off" data-instrument-picker="select" role="combobox" aria-autocomplete="list" aria-controls="document-instrument-results" aria-expanded="false" /><span class="instrument-results" id="document-instrument-results" role="listbox" hidden></span></span></div><div class="form-row"><label class="field-label" for="document-period">报告期（可选）</label><input class="field" id="document-period" name="report_period" placeholder="例如 2026Q3" /></div><p class="field-help">原件与索引保存在本机。被检索到的片段会发送给你配置的模型。</p><div class="form-error" id="document-error" role="alert"></div><button class="button primary" type="submit">导入资料</button></form>`)}</div>`,
     ),
@@ -1357,7 +1328,7 @@ async function renderRoute() {
   const calendarLink = $("#topbar-calendar");
   if (r.name === "calendar") calendarLink.setAttribute("aria-current", "page");
   else calendarLink.removeAttribute("aria-current");
-  document.title = `${r.name === "stocks" && r.id ? r.id : routeTitle} — Finch`;
+  document.title = `${r.name === "stocks" && r.id ? r.id : routeTitle} — Finfreedom`;
   $("#page").classList.toggle("chat-mode", r.name === "chat");
   if (!samePage) {
     renderSidebar();
@@ -1399,6 +1370,7 @@ async function renderRoute() {
       liquidity: (r, signal) => renderLiquidity(r, signal, paperUI()),
       indices: (r, signal) => renderIndices(r, signal, paperUI()),
       flows: (r, signal) => renderFlows(r, signal, paperUI()),
+      funds: (r, signal) => renderFunds(r, signal, paperUI()),
       watchlist: renderWatchlist,
       stocks: renderStock,
       sectors: renderSectors,
@@ -1409,6 +1381,10 @@ async function renderRoute() {
       live: (r, signal) => renderLive(r, signal, paperUI()),
       settings: renderSettings,
       memory: (r, signal) => renderWikiPage(r, signal, { setPage, page, heading }),
+      glossary: async (r, signal) => {
+        const glossary = await renderGlossaryPage(r, signal, { setPage, page, heading });
+        if (!signal.aborted && glossary) state.glossary = glossary;
+      },
       security: async (r, signal) => {
         const html = await renderSecurityPage();
         if (signal.aborted) return;
@@ -1484,6 +1460,14 @@ document.addEventListener("submit", async (e) => {
   if (!(form instanceof HTMLFormElement)) return;
   e.preventDefault();
   if (composing) return;
+  if (form.id === 'glossary-edit-form') {
+    await handleGlossaryAction({ dataset: { action: 'glossary-submit' } }, {
+      state,
+      refresh: async () => { state.glossary = await loadGlossary(); if (state.route?.name === 'glossary') await renderRoute(); else updateMessages(false); },
+      sendChat,
+    });
+    return;
+  }
   if (await handleHoldingsSubmit(form, renderRoute, formError)) return;
   const values = Object.fromEntries(new FormData(form));
   if (handleCalendarSubmit(form, values)) return;
@@ -1735,12 +1719,6 @@ document.addEventListener("change", (e) => {
     handleHoldingsScreenshot(e.target.files[0]);
     return;
   }
-  if (e.target.id === 'chat-skill-zip') {
-    const file = e.target.files[0];
-    e.target.value = '';
-    installChatSkillZip(file);
-    return;
-  }
   if (e.target.id !== "calendar-account") return;
   const params = new URLSearchParams(location.hash.split("?")[1] || "");
   if (e.target.value) params.set("account", e.target.value);
@@ -1821,6 +1799,16 @@ document.addEventListener("click", async (e) => {
   const button = e.target.closest("[data-action]");
   if (!button || button.disabled) return;
   const action = button.dataset.action;
+  if (action.startsWith('glossary-')) {
+    try {
+      await handleGlossaryAction(button, {
+        state,
+        refresh: async () => { state.glossary = await loadGlossary(); if (state.route?.name === 'glossary') await renderRoute(); else updateMessages(false); },
+        sendChat,
+      });
+    } catch (error) { notify(error.message || '词条操作未完成，请重试', 'error'); }
+    return;
+  }
   if (action === "remove-chat-image") {
     const removed = state.pastedImage;
     state.pastedImage = null;
@@ -1831,10 +1819,6 @@ document.addEventListener("click", async (e) => {
       if (uploaded && !uploaded.reused) request('/ai/images/' + encodeURIComponent(uploaded.image_id), { method: 'DELETE' }).catch(() => notify('图片移除失败，请删除对应会话以清理原图'));
     });
     document.getElementById("chat-input")?.focus();
-    return;
-  }
-  if (action === 'skill-zip-chat') {
-    document.getElementById('chat-skill-zip')?.click();
     return;
   }
   if (await handlePaperAction(button, paperUI())) {
@@ -2020,6 +2004,7 @@ document.addEventListener("click", async (e) => {
     if (state.sending) return;
     persistChatSession();
     state.messages = [];
+    state.glossaryExpanded = false;
     state.draft = "";
     state.pastedImage = null;
     state.sessionImage = null;
@@ -2171,7 +2156,7 @@ document.addEventListener("click", async (e) => {
     const personalAccounts = state.accounts.filter((a) => a.mode === 'personal');
     showDialog(
       "账户研究上下文",
-      `<p>选择“我的持仓”账户后，当前对话的后续请求会把该账户的币种、现金、持仓和盈亏发送给配置的模型。</p>${personalAccounts.length ? `<label class="field-label section-gap" for="context-account">选择账户</label><select id="context-account" class="field"><option value="">不读取账户</option>${personalAccounts.map((a) => `<option value="${esc(a.account_id)}" ${state.accountId === a.account_id ? "selected" : ""}>${esc(a.label)} · ${esc(a.currency)} · ${a.positions?.length || 0} 条持仓</option>`).join("")}</select>` : `<p class="field-help section-gap">尚未登记真实持仓。请先在 <a href="#/holdings">我的持仓</a> 保存账户数据。</p>`}`,
+      `<p>选择“我的持仓”账户后，Agent 会在相关问题中按需通过内置 MCP 读取该账户数据，并标明数据时点。</p>${personalAccounts.length ? `<label class="field-label section-gap" for="context-account">选择账户</label><select id="context-account" class="field"><option value="">不读取账户</option>${personalAccounts.map((a) => `<option value="${esc(a.account_id)}" ${state.accountId === a.account_id ? "selected" : ""}>${esc(a.label)} · ${esc(a.currency)} · ${a.positions?.length || 0} 条持仓</option>`).join("")}</select>` : `<p class="field-help section-gap">尚未登记真实持仓。请先在 <a href="#/holdings">我的持仓</a> 保存账户数据。</p>`}`,
       personalAccounts.length ? `<button class="button primary" data-action="save-account-context">${state.pendingAccountQuestion ? "选择并准备分析" : "保存选择"}</button>` : '',
     );
     return;
@@ -2398,7 +2383,7 @@ document.addEventListener("finch:locked", () => {
   cleanupContext();
   cleanupIndices();
   state.controller?.abort();
-  document.title = "登录 — Finch";
+  document.title = "登录 — Finfreedom";
 });
 document.addEventListener("finch:signed-out", () => {
   clearHoldingsDraft();

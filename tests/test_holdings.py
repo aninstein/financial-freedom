@@ -111,6 +111,33 @@ class HoldingsTests(unittest.TestCase):
         self.assertEqual(result["positions"][0]["unrealized_pnl"], -17507.76)
         self.assertEqual(result["positions"][0]["reported_return_pct"], -15.22)
 
+    def test_amount_only_text_position_uses_manual_value_without_inventing_shares(self) -> None:
+        with connect() as db:
+            db.execute("INSERT INTO quotes VALUES(?,?,?,?,?,?,?,?)", ("FUND:018044", "示例基金", 1.8, "CNY", 0.1, "2026-10-29T01:00:00+00:00", "test quote", "fresh"))
+        result = holdings.save_snapshot("owner-a", "CNY", holdings.SnapshotInput(positions=[
+            holdings.PositionInput(instrument_id="FUND:018044", name="示例基金", asset_class="fund", manual_value=5162.81),
+        ]))
+        item = result["positions"][0]
+        self.assertIsNone(item["quantity"])
+        self.assertEqual(item["current_value"], 5162.81)
+        self.assertEqual(item["valuation_source"], "manual")
+        with self.assertRaisesRegex(HTTPException, "缺少份额和资料市值"):
+            holdings.save_snapshot("owner-b", "CNY", holdings.SnapshotInput(positions=[
+                holdings.PositionInput(instrument_id="FUND:018044", name="示例基金", asset_class="fund"),
+            ]))
+
+    def test_existing_sqlite_positions_migrate_to_optional_quantity(self) -> None:
+        with connect() as db:
+            db.execute("DROP TABLE personal_positions")
+            db.execute("CREATE TABLE personal_positions (owner_id TEXT NOT NULL, currency TEXT NOT NULL, instrument_id TEXT NOT NULL, name TEXT NOT NULL, asset_class TEXT NOT NULL, quantity REAL NOT NULL, cost_basis REAL, manual_value REAL, updated_at TEXT NOT NULL, reported_return_pct REAL, PRIMARY KEY(owner_id,currency,instrument_id))")
+            db.execute("INSERT INTO personal_positions VALUES(?,?,?,?,?,?,?,?,?,?)", ("owner-a", "CNY", "FUND:018044", "示例基金", "fund", 100, None, 500, "2026-10-29T00:00:00+00:00", None))
+        holdings.initialize()
+        with connect() as db:
+            row = db.execute("SELECT quantity FROM personal_positions WHERE owner_id='owner-a'").fetchone()
+            nullable = next(item for item in db.execute("PRAGMA table_info(personal_positions)") if item["name"] == "quantity")
+        self.assertEqual(row["quantity"], 100)
+        self.assertEqual(nullable["notnull"], 0)
+
     def test_api_uses_authenticated_owner(self) -> None:
         app = FastAPI()
         app.include_router(holdings.router)
@@ -157,6 +184,35 @@ class HoldingsTests(unittest.TestCase):
             result = client.post("/api/v1/holdings/import-preview", json={"currency": "CNY", "image_data_url": image})
             self.assertEqual(result.status_code, 200)
             self.assertIs(chat.await_args.args[0], vision_model)
+
+    def test_text_import_creates_review_draft_without_image_or_quantity(self) -> None:
+        app = FastAPI()
+        app.include_router(holdings.router)
+        client = TestClient(app)
+        text_model = SimpleNamespace(supports_vision=False)
+        response = {"content": '{"principal":null,"cash":null,"positions":[{"instrument_id":null,"name":"万家稳鑫","asset_class":"fund","quantity":null,"cost_basis":null,"manual_value":null},{"instrument_id":null,"name":"长信30天","asset_class":"fund","quantity":null,"cost_basis":null,"manual_value":null}],"warnings":["两只底仓合计约8万元，无法分配到单只持仓"]}'}
+        with patch.object(holdings.security, "current_owner_id", return_value="owner-a"), \
+             patch.object(holdings, "load_model_configs", return_value=([text_model], None)), \
+             patch.object(holdings, "_chat", new=AsyncMock(return_value=response)) as chat:
+            result = client.post("/api/v1/holdings/import-preview", json={"currency": "CNY", "text": "万家稳鑫3万，长信30天5万，合计8万；帮我导入持仓"})
+            self.assertEqual(result.status_code, 200)
+            draft = result.json()
+            self.assertEqual(draft["source"], "文字")
+            self.assertEqual(len(draft["positions"]), 2)
+            self.assertIsNone(draft["positions"][0]["quantity"])
+            self.assertIsNone(draft["positions"][0]["instrument_id"])
+            self.assertTrue(any("补填" in warning for warning in draft["warnings"]))
+            self.assertIs(chat.await_args.args[0], text_model)
+            self.assertIsInstance(chat.await_args.args[1][1]["content"], str)
+            self.assertEqual(holdings.get_portfolios("owner-a"), [])
+
+    def test_text_import_rejects_ambiguous_sources(self) -> None:
+        app = FastAPI()
+        app.include_router(holdings.router)
+        client = TestClient(app)
+        with patch.object(holdings.security, "current_owner_id", return_value="owner-a"):
+            self.assertEqual(client.post("/api/v1/holdings/import-preview", json={"currency": "CNY"}).status_code, 422)
+            self.assertEqual(client.post("/api/v1/holdings/import-preview", json={"currency": "CNY", "text": "some holdings", "image_id": "image-a"}).status_code, 422)
 
     def test_gold_fund_without_visible_code_stays_in_review_draft(self) -> None:
         content = '{"principal":null,"cash":null,"positions":[{"instrument_id":null,"name":"易方达黄金ETF联接C","asset_class":"gold","quantity":35686.30,"cost_basis":null,"manual_value":97491.40,"reported_return_pct":-15.22}],"warnings":[]}'
